@@ -1,0 +1,10 @@
+{
+  "extends": "../../../tsconfig.packages.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "jsx": "react-jsx"
+  },
+  "include": ["src/**/*"]
+}

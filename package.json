@@ -1,0 +1,66 @@
+{
+  "name": "@donotdev/firebase",
+  "version": "0.1.42",
+  "private": false,
+  "type": "module",
+  "license": "MIT",
+  "description": "Firebase utilities for DoNotDev",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./server": {
+      "types": "./src/server/index.ts",
+      "import": "./src/server/index.ts",
+      "default": "./src/server/index.ts"
+    }
+  },
+  "scripts": {
+    "dev": "tsc --noEmit --watch --listFiles false --listEmittedFiles false",
+    "clean": "rimraf dist tsconfig.tsbuildinfo",
+    "type-check": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "browser-image-compression": "^2.0.2",
+    "firebase": "^12.9.0",
+    "firebase-admin": "^13.6.1",
+    "valibot": "^1.2.0"
+  },
+  "peerDependencies": {
+    "@donotdev/components": "^0.1.42",
+    "@donotdev/core": "^0.1.42"
+  },
+  "files": [
+    "dist",
+    "package.json",
+    "README.md",
+    "LICENSE.md"
+  ],
+  "devDependencies": {
+    "@donotdev/components": "workspace:*",
+    "@donotdev/core": "workspace:*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/donotdev/firebase.git"
+  },
+  "keywords": [
+    "donotdev",
+    "dndev",
+    "firebase",
+    "firestore",
+    "realtime-database",
+    "storage",
+    "react",
+    "typescript"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
+  },
+  "peerDependenciesMeta": {}
+}
