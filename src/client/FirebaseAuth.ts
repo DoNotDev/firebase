@@ -63,7 +63,6 @@ import {
   OAuthProvider,
   EmailAuthProvider,
 } from './sdk';
-
 import type { FirebaseUser, AuthCredential, UserInfo } from './sdk';
 
 /**

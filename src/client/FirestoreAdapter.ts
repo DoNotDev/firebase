@@ -27,6 +27,8 @@
  * @author AMBROISE PARK Consulting
  */
 
+import type { Firestore } from 'firebase/firestore';
+
 import {
   BulkCollisionError,
   detectBulkCollisions,
@@ -76,8 +78,6 @@ import {
 } from './firestore';
 import { getFirebaseFirestore } from './firestore';
 import { getFirebaseSDK } from './sdk';
-
-import type { Firestore } from 'firebase/firestore';
 
 /**
  * Subscription callback for document subscriptions

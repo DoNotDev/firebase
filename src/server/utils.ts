@@ -8,12 +8,12 @@
  * @author AMBROISE PARK Consulting
  */
 
+import type { App } from 'firebase-admin/app';
+import type { Firestore } from 'firebase-admin/firestore';
+
 import { handleError } from '@donotdev/core/server';
 
 import { getFirebaseAdminApp, getFirebaseAdminFirestore } from './init';
-
-import type { App } from 'firebase-admin/app';
-import type { Firestore } from 'firebase-admin/firestore';
 
 // Server-only implementations
 const serverImplementations = {

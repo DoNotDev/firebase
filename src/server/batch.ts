@@ -8,6 +8,10 @@
  * @author AMBROISE PARK Consulting
  */
 
+import type {
+  DocumentReference,
+  DocumentSnapshot,
+} from 'firebase-admin/firestore';
 import * as v from 'valibot';
 
 import type { dndevSchema } from '@donotdev/core';
@@ -18,11 +22,6 @@ import {
   prepareForFirestore,
   transformFirestoreData,
 } from '../shared/transform';
-
-import type {
-  DocumentReference,
-  DocumentSnapshot,
-} from 'firebase-admin/firestore';
 
 // Structural type matching firebase-admin Transaction without importing it directly
 // (avoids module resolution issues in some bundler configurations)

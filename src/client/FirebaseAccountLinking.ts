@@ -20,7 +20,6 @@ import {
 import { getAuthMethod, type AuthMethod } from '@donotdev/core';
 
 import { OAuthProvider, type FirebaseUser } from './sdk';
-
 import type { getFirebaseSDK } from './sdk';
 
 type FirebaseSDKInstance = ReturnType<typeof getFirebaseSDK>;

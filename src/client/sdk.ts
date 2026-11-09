@@ -23,6 +23,7 @@
  */
 
 import { initializeApp, getApps } from 'firebase/app';
+import type { FirebaseApp } from 'firebase/app';
 import {
   initializeAppCheck,
   ReCaptchaEnterpriseProvider,
@@ -30,18 +31,6 @@ import {
 } from 'firebase/app-check';
 import * as firebaseAuth from 'firebase/auth';
 import { GoogleAuthProvider } from 'firebase/auth';
-
-import type { SecurityContext } from '@donotdev/core';
-import {
-  createSingleton,
-  getPlatformEnvVar,
-  getAuthDomain,
-  handleError,
-} from '@donotdev/core';
-import { AuthHardening } from '@donotdev/core';
-
-import type { FirebaseConfig } from '../shared/types';
-import type { FirebaseApp } from 'firebase/app';
 import type {
   Auth,
   User,
@@ -64,6 +53,17 @@ import type {
   EmailAuthProvider,
   PhoneAuthProvider,
 } from 'firebase/auth';
+
+import type { SecurityContext } from '@donotdev/core';
+import {
+  createSingleton,
+  getPlatformEnvVar,
+  getAuthDomain,
+  handleError,
+} from '@donotdev/core';
+import { AuthHardening } from '@donotdev/core';
+
+import type { FirebaseConfig } from '../shared/types';
 
 // Re-export types for convenience
 export type {
