@@ -1949,35 +1949,6 @@ export class FirebaseAuth implements AuthProvider {
     this.storeState.clearAuthError();
   }
 
-  /**
-   * Fetch sign-in methods for email
-   *
-   * Gets list of sign-in methods available for an email address.
-   * Useful for determining which providers user has used.
-   *
-   * @param email - Email address to check
-   * @returns Array of sign-in method strings
-   *
-   * @deprecated This method enables email enumeration attacks — an attacker can
-   * determine whether an email address is registered by calling it. It will be
-   * removed in a future version. Use the account linking flow instead
-   * (see `handleAccountLinking`).
-   */
-  async fetchSignInMethodsForEmail(email: string): Promise<string[]> {
-    console.warn(
-      '[DoNotDev] fetchSignInMethodsForEmail is deprecated — it enables email enumeration attacks. Use the account linking flow instead.'
-    );
-    this.ensureInitialized();
-
-    try {
-      return await this.sdk.fetchSignInMethodsForEmail(email);
-    } catch (error) {
-      throw handleError(error, {
-        userMessage: 'Failed to check sign-in methods',
-      });
-    }
-  }
-
   // ==========================================================================
   // Helper Methods
   // ==========================================================================

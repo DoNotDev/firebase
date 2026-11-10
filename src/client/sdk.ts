@@ -1209,25 +1209,6 @@ class FirebaseSDK {
     return firebaseAuth.unlink(user, providerId);
   }
 
-  /**
-   * Fetch sign-in methods for email
-   *
-   * Gets list of sign-in methods available for given email address.
-   *
-   * @param email - Email address to check
-   * @returns Promise resolving to array of provider IDs
-   *
-   * @example
-   * ```typescript
-   * const methods = await sdk.fetchSignInMethodsForEmail('user@example.com');
-   * console.log('Available methods:', methods); // ['google.com', 'password']
-   * ```
-   */
-  async fetchSignInMethodsForEmail(email: string): Promise<string[]> {
-    const auth = this.ensureInitialized();
-    return firebaseAuth.fetchSignInMethodsForEmail(auth, email);
-  }
-
   // ==========================================================================
   // Re-authentication Methods
   // ==========================================================================

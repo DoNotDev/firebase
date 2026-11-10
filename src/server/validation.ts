@@ -23,7 +23,6 @@ export {
   hasUniqueConstraintValidator,
   createFirestoreValidator,
   createAdminFirestoreValidator,
-  createFirestoreClientValidator,
 } from './uniqueness';
 
 /**

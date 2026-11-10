@@ -287,7 +287,6 @@ Uniqueness constraint validation to ensure field values are unique.
 
 - `validateUniqueness`: Validates uniqueness constraints for a document
 - `createFirestoreValidator`: Server-side validator for uniqueness
-- `createFirestoreClientValidator`: Client-side validator for uniqueness
 
 ### batch.ts
 

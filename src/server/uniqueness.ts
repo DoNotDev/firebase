@@ -162,12 +162,6 @@ export async function createAdminFirestoreValidator(): Promise<UniqueConstraintV
 }
 
 /**
- * @deprecated Use createAdminFirestoreValidator instead.
- * This alias is kept for backwards compatibility and will be removed in a future version.
- */
-export const createFirestoreClientValidator = createAdminFirestoreValidator;
-
-/**
  * Validates uniqueness constraints for a document
  * @param collection Collection name
  * @param constraints Array of field constraints to check
