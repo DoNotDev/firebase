@@ -129,7 +129,7 @@ export function firestoreToISOString(date: DateValue): string {
  * @since 0.0.1
  * @author AMBROISE PARK Consulting
  */
-export function isTimestamp(value: any): value is FirestoreTimestamp {
+export function isTimestamp(value: unknown): value is FirestoreTimestamp {
   return (
     typeof value === 'object' &&
     value !== null &&
@@ -167,23 +167,30 @@ function isISODateString(str: string): boolean {
  * @since 0.0.1
  * @author AMBROISE PARK Consulting
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: exported signature; narrowing it is a breaking change for importers (deferred to a major, any-audit 2026-11-11)
 export function convertISOStringsToDates<T = any>(data: T): T {
+  // why: the public signature returns `T` although ISO strings become Dates at runtime
+  return convertISOStrings(data) as T;
+}
+
+/** Recursive worker of {@link convertISOStringsToDates}. */
+function convertISOStrings(data: unknown): unknown {
   if (!data) return data;
 
   if (Array.isArray(data)) {
-    return data.map((item) => convertISOStringsToDates(item)) as unknown as T;
+    return data.map(convertISOStrings);
   }
 
   if (typeof data === 'string' && isISODateString(data)) {
-    return new Date(data) as unknown as T;
+    return new Date(data);
   }
 
-  if (typeof data === 'object' && data !== null) {
-    const converted: Record<string, any> = {};
-    for (const [key, value] of Object.entries(data as Record<string, any>)) {
-      converted[key] = convertISOStringsToDates(value);
+  if (typeof data === 'object') {
+    const converted: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(data)) {
+      converted[key] = convertISOStrings(value);
     }
-    return converted as T;
+    return converted;
   }
 
   return data;
@@ -199,47 +206,57 @@ export function convertISOStringsToDates<T = any>(data: T): T {
  * @since 0.0.1
  * @author AMBROISE PARK Consulting
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: exported signature; narrowing it is a breaking change for importers (deferred to a major, any-audit 2026-11-11)
 export function transformFirestoreData<T = any>(
   data: T,
   includeDocumentIds: boolean = false
 ): T {
+  // why: the public signature returns `T` although Timestamps become ISO strings at runtime
+  return transformFirestoreValue(data, includeDocumentIds) as T;
+}
+
+/** Recursive worker of {@link transformFirestoreData}. */
+function transformFirestoreValue(
+  data: unknown,
+  includeDocumentIds: boolean = false
+): unknown {
   if (!data) return data;
 
   // Handle Firestore document with ID
   if (
     includeDocumentIds &&
     typeof data === 'object' &&
-    data !== null &&
     'id' in data &&
     'ref' in data &&
     'data' in data &&
-    typeof (data as any).data === 'function'
+    typeof data.data === 'function'
   ) {
-    const doc = data as any;
-    const documentData = doc.data();
+    const documentData: unknown = data.data();
+    // DocumentSnapshot.data() returns an object or undefined (spread no-op)
+    const transformedData = transformFirestoreValue(documentData);
     return {
-      id: doc.id,
-      ...transformFirestoreData(documentData),
-    } as T;
+      id: data.id,
+      ...(typeof transformedData === 'object' ? transformedData : {}),
+    };
   }
 
   // Handle arrays
   if (Array.isArray(data)) {
-    return data.map((item) => transformFirestoreData(item)) as unknown as T;
+    return data.map((item) => transformFirestoreValue(item));
   }
 
   // Handle Timestamps
   if (isTimestamp(data)) {
-    return firestoreToISOString(data) as unknown as T;
+    return firestoreToISOString(data);
   }
 
   // Handle objects recursively
-  if (typeof data === 'object' && data !== null) {
-    const transformed: Record<string, any> = {};
-    for (const [key, value] of Object.entries(data as Record<string, any>)) {
-      transformed[key] = transformFirestoreData(value);
+  if (typeof data === 'object') {
+    const transformed: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(data)) {
+      transformed[key] = transformFirestoreValue(value);
     }
-    return transformed as T;
+    return transformed;
   }
 
   // Return primitive values unchanged
@@ -257,30 +274,38 @@ export function transformFirestoreData<T = any>(
  * @since 0.0.1
  * @author AMBROISE PARK Consulting
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: exported signature; narrowing it is a breaking change for importers (deferred to a major, any-audit 2026-11-11)
 export function prepareForFirestore<T = any>(
   data: T,
   removeFields: string[] = []
 ): T {
+  // why: the public signature returns `T` although Dates become ISO strings at runtime
+  return prepareValueForFirestore(data, removeFields) as T;
+}
+
+/** Recursive worker of {@link prepareForFirestore}. */
+function prepareValueForFirestore(
+  data: unknown,
+  removeFields: string[]
+): unknown {
   if (!data) return data;
 
   // Handle arrays
   if (Array.isArray(data)) {
-    return data.map((item) =>
-      prepareForFirestore(item, removeFields)
-    ) as unknown as T;
+    return data.map((item) => prepareValueForFirestore(item, removeFields));
   }
 
   // Handle Date objects - convert to ISO string
   if (data instanceof Date) {
-    return data.toISOString() as unknown as T;
+    return data.toISOString();
   }
 
   // ISO strings stay as strings - no conversion needed
 
   // Handle objects recursively
-  if (typeof data === 'object' && data !== null) {
-    const prepared: Record<string, any> = {};
-    for (const [key, value] of Object.entries(data as Record<string, any>)) {
+  if (typeof data === 'object') {
+    const prepared: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(data)) {
       // Skip fields that should be removed
       if (removeFields.includes(key)) {
         continue;
@@ -291,9 +316,9 @@ export function prepareForFirestore<T = any>(
         continue;
       }
 
-      prepared[key] = prepareForFirestore(value, removeFields);
+      prepared[key] = prepareValueForFirestore(value, removeFields);
     }
-    return prepared as T;
+    return prepared;
   }
 
   // Return primitive values unchanged
@@ -310,6 +335,7 @@ export function prepareForFirestore<T = any>(
  * @since 0.0.1
  * @author AMBROISE PARK Consulting
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: interface-typed records have no implicit index signature; Record<string, unknown> would reject them
 export function createFirestorePartialUpdate<T extends Record<string, any>>(
   original: T,
   updated: Partial<T>
@@ -317,6 +343,7 @@ export function createFirestorePartialUpdate<T extends Record<string, any>>(
   const diff: Partial<T> = {};
 
   // Track only changes
+  // why (`key as keyof T` below): Object.entries widens keys of Partial<T> to string
   for (const [key, value] of Object.entries(updated)) {
     // Skip if key doesn't exist in original
     if (!(key in original)) {

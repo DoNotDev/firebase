@@ -151,14 +151,16 @@ export function uploadFileResumable(
     });
   }
 
-  const promise = task.then(async () => {
+  // UploadTask.then is typed Promise<unknown>; await it inside a typed async function
+  const promise = (async (): Promise<FirebaseUploadResult> => {
+    await task;
     const url = await getDownloadURL(storageRef);
     return {
       url,
       path,
       filename: fileName,
     };
-  }) as Promise<FirebaseUploadResult>;
+  })();
 
   return { task, promise };
 }

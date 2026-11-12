@@ -9,6 +9,8 @@
  * @author AMBROISE PARK Consulting
  */
 
+import type { FirebaseError } from 'firebase/app';
+
 import { toast } from '@donotdev/components';
 import {
   handleError,
@@ -17,6 +19,52 @@ import {
   type AuthPartnerId,
 } from '@donotdev/core';
 import { getAuthMethod, type AuthMethod } from '@donotdev/core';
+
+import type { FirebaseUser, getFirebaseSDK } from './sdk';
+
+/**
+ * Firebase SDK error (structural: SDK errors and test doubles carry a string `code`).
+ *
+ * @internal
+ */
+export function isFirebaseError(error: unknown): error is FirebaseError {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    typeof error.code === 'string'
+  );
+}
+
+/**
+ * Code of a Firebase SDK error (`auth/...`), when the value carries one.
+ *
+ * @internal
+ */
+export function firebaseErrorCode(error: unknown): string | undefined {
+  return isFirebaseError(error) ? error.code : undefined;
+}
+
+/**
+ * String at `path` inside a value (e.g. a Firebase error's `customData._tokenResponse`,
+ * which is SDK-internal and untyped).
+ *
+ * @internal
+ */
+export function nestedString(
+  value: unknown,
+  ...path: string[]
+): string | undefined {
+  let current = value;
+  for (const key of path) {
+    if (typeof current !== 'object' || current === null) return undefined;
+    current = Reflect.get(current, key);
+  }
+  return typeof current === 'string' ? current : undefined;
+}
+
+/** What a recovered operation resolves to (sign-in credential, or nothing for redirects). */
+type RecoveryOperationResult = { user: FirebaseUser } | null | void;
 
 /**
  * Context information for smart recovery
@@ -39,13 +87,13 @@ export interface SmartRecoveryContext {
  * @author AMBROISE PARK Consulting
  */
 export interface SmartRecoveryDependencies {
-  sdk: any;
+  sdk: ReturnType<typeof getFirebaseSDK>;
   handleAccountLinking: (
-    error: any,
+    error: FirebaseError,
     attemptedProvider: AuthPartnerId,
     method: AuthMethod
   ) => Promise<AuthResult | null>;
-  createAuthResult: (user: any, isNewUser?: boolean) => AuthResult;
+  createAuthResult: (user: FirebaseUser, isNewUser?: boolean) => AuthResult;
 }
 
 /**
@@ -73,13 +121,15 @@ export interface SmartRecoveryDependencies {
  * @author AMBROISE PARK Consulting
  */
 export async function handleSmartRecovery(
-  error: any,
-  operation: () => Promise<any>,
+  error: unknown,
+  operation: () => Promise<RecoveryOperationResult>,
   context: SmartRecoveryContext,
   deps: SmartRecoveryDependencies
 ): Promise<AuthResult | null> {
+  const code = firebaseErrorCode(error);
+
   // Network issues → retry with backoff
-  if (error.code === 'auth/network-request-failed') {
+  if (code === 'auth/network-request-failed') {
     toast('info', 'Connection issue - retrying...');
     try {
       return await retryWithBackoff(operation, deps);
@@ -87,28 +137,28 @@ export async function handleSmartRecovery(
       throw handleError(retryError, {
         userMessage:
           'Network connection failed. Please check your internet and try again.',
-        context: { operation: 'network-retry', originalError: error.code },
+        context: { operation: 'network-retry', originalError: code },
         showNotification: true,
       });
     }
   }
 
   // Rate limiting → exponential backoff
-  if (error.code === 'auth/too-many-requests') {
+  if (code === 'auth/too-many-requests') {
     toast('info', 'Rate limited - retrying with backoff...');
     try {
       return await retryWithExponentialBackoff(operation, deps);
     } catch (retryError) {
       throw handleError(retryError, {
         userMessage: 'Too many attempts. Please wait a moment and try again.',
-        context: { operation: 'rate-limit-retry', originalError: error.code },
+        context: { operation: 'rate-limit-retry', originalError: code },
         showNotification: true,
       });
     }
   }
 
   // Internal errors → retry with delay
-  if (error.code === 'auth/internal-error') {
+  if (code === 'auth/internal-error') {
     toast('info', 'Temporary issue - retrying...');
     try {
       return await retryWithDelay(operation, deps);
@@ -117,7 +167,7 @@ export async function handleSmartRecovery(
         userMessage: 'A temporary error occurred. Please try again.',
         context: {
           operation: 'internal-error-retry',
-          originalError: error.code,
+          originalError: code,
         },
         showNotification: true,
       });
@@ -125,7 +175,10 @@ export async function handleSmartRecovery(
   }
 
   // Account linking → handle linking
-  if (error.code === 'auth/account-exists-with-different-credential') {
+  if (
+    code === 'auth/account-exists-with-different-credential' &&
+    isFirebaseError(error)
+  ) {
     try {
       return await deps.handleAccountLinking(
         error,
@@ -135,7 +188,7 @@ export async function handleSmartRecovery(
     } catch (linkingError) {
       throw handleError(linkingError, {
         userMessage: 'Failed to link accounts. Please try again.',
-        context: { operation: 'account-linking', originalError: error.code },
+        context: { operation: 'account-linking', originalError: code },
         showNotification: true,
       });
     }
@@ -143,19 +196,30 @@ export async function handleSmartRecovery(
 
   // User cancellation → return null (not an error)
   if (
-    error.code === 'auth/popup-closed-by-user' ||
-    error.code === 'auth/cancelled-popup-request' ||
-    error.code === 'auth/popup-blocked'
+    code === 'auth/popup-closed-by-user' ||
+    code === 'auth/cancelled-popup-request' ||
+    code === 'auth/popup-blocked'
   ) {
     return null;
   }
 
   // Can't handle → wrap and throw
   throw handleError(error, {
-    userMessage: getErrorMessage(error.code),
-    context: { operation: 'smart-recovery', errorCode: error.code },
+    userMessage: getErrorMessage(code),
+    context: { operation: 'smart-recovery', errorCode: code },
     showNotification: true,
   });
+}
+
+/**
+ * User of a retried operation's credential. An operation without one (redirect,
+ * no-op) fails the retry, as reading `.user` of nothing did before typing.
+ */
+function requireUser(result: RecoveryOperationResult): FirebaseUser {
+  if (!result) {
+    throw new TypeError('Recovered operation returned no credential');
+  }
+  return result.user;
 }
 
 /**
@@ -171,18 +235,17 @@ export async function handleSmartRecovery(
  * @private
  */
 async function retryWithBackoff(
-  operation: () => Promise<any>,
+  operation: () => Promise<RecoveryOperationResult>,
   deps: SmartRecoveryDependencies,
   maxRetries = 3
 ): Promise<AuthResult | null> {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const result = await operation();
-      return deps.createAuthResult(result.user);
-    } catch (error: any) {
+      return deps.createAuthResult(requireUser(await operation()));
+    } catch (error: unknown) {
       if (
         attempt === maxRetries ||
-        error.code !== 'auth/network-request-failed'
+        firebaseErrorCode(error) !== 'auth/network-request-failed'
       ) {
         throw error;
       }
@@ -211,16 +274,18 @@ async function retryWithBackoff(
  * @private
  */
 async function retryWithExponentialBackoff(
-  operation: () => Promise<any>,
+  operation: () => Promise<RecoveryOperationResult>,
   deps: SmartRecoveryDependencies,
   maxRetries = 3
 ): Promise<AuthResult | null> {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const result = await operation();
-      return deps.createAuthResult(result.user);
-    } catch (error: any) {
-      if (attempt === maxRetries || error.code !== 'auth/too-many-requests') {
+      return deps.createAuthResult(requireUser(await operation()));
+    } catch (error: unknown) {
+      if (
+        attempt === maxRetries ||
+        firebaseErrorCode(error) !== 'auth/too-many-requests'
+      ) {
         throw error;
       }
       const delay = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s
@@ -248,16 +313,18 @@ async function retryWithExponentialBackoff(
  * @private
  */
 async function retryWithDelay(
-  operation: () => Promise<any>,
+  operation: () => Promise<RecoveryOperationResult>,
   deps: SmartRecoveryDependencies,
   maxRetries = 2
 ): Promise<AuthResult | null> {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const result = await operation();
-      return deps.createAuthResult(result.user);
-    } catch (error: any) {
-      if (attempt === maxRetries || error.code !== 'auth/internal-error') {
+      return deps.createAuthResult(requireUser(await operation()));
+    } catch (error: unknown) {
+      if (
+        attempt === maxRetries ||
+        firebaseErrorCode(error) !== 'auth/internal-error'
+      ) {
         throw error;
       }
       const delay = 2000; // 2s delay
@@ -281,7 +348,7 @@ async function retryWithDelay(
  * @returns User-friendly error message
  * @private
  */
-function getErrorMessage(errorCode: string): string {
+function getErrorMessage(errorCode: string | undefined): string {
   const errorMessages: Record<string, string> = {
     'auth/invalid-email': 'Invalid email address',
     'auth/user-disabled': 'This account has been disabled',
@@ -302,5 +369,7 @@ function getErrorMessage(errorCode: string): string {
       'Popup was blocked by your browser. Please allow popups and try again.',
   };
 
-  return errorMessages[errorCode] || 'An authentication error occurred';
+  return (
+    (errorCode && errorMessages[errorCode]) || 'An authentication error occurred'
+  );
 }

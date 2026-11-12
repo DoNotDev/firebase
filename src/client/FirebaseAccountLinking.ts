@@ -9,6 +9,9 @@
  * @author AMBROISE PARK Consulting
  */
 
+import type { FirebaseError } from 'firebase/app';
+import type { AuthProvider } from 'firebase/auth';
+
 import { toast } from '@donotdev/components';
 import {
   type AuthResult,
@@ -19,6 +22,7 @@ import {
 } from '@donotdev/core';
 import { getAuthMethod, type AuthMethod } from '@donotdev/core';
 
+import { firebaseErrorCode, nestedString } from './FirebaseSmartRecovery';
 import { OAuthProvider, type FirebaseUser } from './sdk';
 import type { getFirebaseSDK } from './sdk';
 
@@ -26,11 +30,11 @@ type FirebaseSDKInstance = ReturnType<typeof getFirebaseSDK>;
 
 export interface AccountLinkingDependencies {
   sdk: FirebaseSDKInstance;
-  createProviderFromConfig: (partnerId: AuthPartnerId) => any;
+  createProviderFromConfig: (partnerId: AuthPartnerId) => AuthProvider;
   createAuthResult: (user: FirebaseUser, isNewUser?: boolean) => AuthResult;
   getExistingProvider: (
     sdk: FirebaseSDKInstance,
-    error: any,
+    error: FirebaseError,
     email: string
   ) => Promise<AuthPartnerId | null>;
 }
@@ -44,7 +48,7 @@ export interface AccountLinkingDependencies {
  * @author AMBROISE PARK Consulting
  */
 export async function handleOAuthLinking(
-  error: any,
+  error: FirebaseError,
   attemptedProvider: AuthPartnerId,
   method: AuthMethod,
   deps: AccountLinkingDependencies
@@ -52,7 +56,8 @@ export async function handleOAuthLinking(
   // Internal Firebase error - don't expose details to AuthService layer
   // Silence verbose logging in production builds
 
-  const email = error.customData?.email || error.email;
+  const email =
+    nestedString(error, 'customData', 'email') || nestedString(error, 'email');
   if (!email) {
     if (isDev())
       console.warn(
@@ -116,27 +121,22 @@ export async function handleOAuthLinking(
     return await handleOAuthToEmailLinkLinking(email, attemptedProvider, deps);
   }
 
-  // Password → OAuth: Trigger OAuth flow (user tried password, account exists with OAuth)
-  if (
-    (attemptedProvider as string) === 'password' &&
-    (existingProvider as string) !== 'password'
-  ) {
+  // Password → OAuth: Trigger OAuth flow (user tried password, account exists with OAuth;
+  // existingProvider is neither 'password' nor 'emailLink' here, both returned above)
+  if (attemptedProvider === 'password') {
     return await handlePasswordToOAuthLinking(
       email,
-      existingProvider as AuthPartnerId,
+      existingProvider,
       method,
       deps
     );
   }
 
   // EmailLink → OAuth: Trigger OAuth flow (user tried emailLink, account exists with OAuth)
-  if (
-    (attemptedProvider as string) === 'emailLink' &&
-    (existingProvider as string) !== 'emailLink'
-  ) {
+  if (attemptedProvider === 'emailLink') {
     return await handleEmailLinkToOAuthLinking(
       email,
-      existingProvider as AuthPartnerId,
+      existingProvider,
       method,
       deps
     );
@@ -219,7 +219,7 @@ async function handleOAuthToOAuthLinking(
   // Store linking info for after user signs in
   const linkingInfo: AccountLinkingInfo = {
     email,
-    existingProvider: existingProvider as AuthPartnerId,
+    existingProvider,
     newProvider: attemptedProvider,
     timestamp: Date.now(),
   };
@@ -227,9 +227,7 @@ async function handleOAuthToOAuthLinking(
   safeSessionStorage.setItem('accountLinkingInfo', JSON.stringify(linkingInfo));
 
   // Automatically trigger sign-in with existing provider
-  const provider = deps.createProviderFromConfig(
-    existingProvider as AuthPartnerId
-  );
+  const provider = deps.createProviderFromConfig(existingProvider);
   // Respect method prop if provided, otherwise use getAuthMethod (popup in dev, redirect in prod)
   const authMethod = getAuthMethod(method);
 
@@ -245,7 +243,7 @@ async function handleOAuthToOAuthLinking(
       // After popup sign-in, check if we need to complete linking
       // The linking will be handled by checkPendingLinking() in onAuthStateChanged
       return deps.createAuthResult(result.user, false);
-    } catch (popupError: any) {
+    } catch (popupError: unknown) {
       if (isDev()) {
         console.error(
           '[FirebaseAccountLinking] Popup sign-in failed:',
@@ -255,8 +253,8 @@ async function handleOAuthToOAuthLinking(
       // In dev mode, don't fall back to redirect - it breaks the flow
       // Instead, show an error and ask user to allow popups
       if (
-        popupError.code === 'auth/popup-blocked' ||
-        popupError.code === 'auth/popup-closed-by-user'
+        firebaseErrorCode(popupError) === 'auth/popup-blocked' ||
+        firebaseErrorCode(popupError) === 'auth/popup-closed-by-user'
       ) {
         toast(
           'error',

@@ -1,6 +1,6 @@
 {
   "name": "@donotdev/firebase",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": false,
   "type": "module",
   "license": "MIT",
@@ -26,13 +26,13 @@
   },
   "dependencies": {
     "browser-image-compression": "^2.0.2",
-    "firebase": "^13.2.0",
-    "firebase-admin": "^14.5.0",
+    "firebase": "^13.3.0",
+    "firebase-admin": "^14.5.1",
     "valibot": "^1.5.0"
   },
   "peerDependencies": {
-    "@donotdev/components": "^0.2.2",
-    "@donotdev/core": "^0.2.2"
+    "@donotdev/components": "^0.2.3",
+    "@donotdev/core": "^0.2.3"
   },
   "files": [
     "dist",

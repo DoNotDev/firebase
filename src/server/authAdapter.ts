@@ -14,8 +14,8 @@ import type {
   IServerAuthAdapter,
   VerifiedToken,
   ServerUserRecord,
-} from '@donotdev/core';
-import { wrapAuthError } from '@donotdev/core';
+} from '@donotdev/core/server';
+import { wrapAuthError } from '@donotdev/core/server';
 
 import { getFirebaseAdminAuth } from './init';
 
@@ -48,7 +48,7 @@ export class FirebaseServerAuthAdapter implements IServerAuthAdapter {
       return {
         uid: decodedToken.uid,
         email: decodedToken.email,
-        claims: decodedToken as unknown as Record<string, unknown>,
+        claims: decodedToken,
       };
     } catch (error) {
       throw wrapAuthError(error, 'FirebaseServerAuthAdapter', 'verifyToken');
@@ -62,12 +62,15 @@ export class FirebaseServerAuthAdapter implements IServerAuthAdapter {
         uid: user.uid,
         email: user.email,
         displayName: user.displayName,
-        customClaims: (user.customClaims as Record<string, unknown>) ?? {},
+        customClaims: user.customClaims ?? {},
       };
     } catch (error: unknown) {
       // NW7 fix: only swallow "user not found" errors — re-throw infrastructure failures.
       // Silently returning null for all errors hides outages and auth misconfigurations.
-      const code = (error as { code?: string }).code;
+      const code =
+        typeof error === 'object' && error !== null && 'code' in error
+          ? error.code
+          : undefined;
       if (code === 'auth/user-not-found') {
         return null;
       }
@@ -84,8 +87,7 @@ export class FirebaseServerAuthAdapter implements IServerAuthAdapter {
     try {
       // Merge with existing claims
       const user = await getFirebaseAdminAuth().getUser(uid);
-      const existingClaims =
-        (user.customClaims as Record<string, unknown>) ?? {};
+      const existingClaims = user.customClaims ?? {};
       await getFirebaseAdminAuth().setCustomUserClaims(uid, {
         ...existingClaims,
         ...claims,

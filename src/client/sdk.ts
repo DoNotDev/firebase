@@ -54,7 +54,7 @@ import type {
   PhoneAuthProvider,
 } from 'firebase/auth';
 
-import type { SecurityContext } from '@donotdev/core';
+import type { AuthHardeningContext, SecurityContext } from '@donotdev/core';
 import {
   createSingleton,
   getPlatformEnvVar,
@@ -169,11 +169,8 @@ class FirebaseSDK {
   }
 
   /** Active hardening — SecurityContext's when injected, otherwise the default instance. */
-  private get _hardening(): AuthHardening {
-    return (
-      (this.security?.authHardening as AuthHardening | undefined) ??
-      this.defaultHardening
-    );
+  private get _hardening(): AuthHardeningContext {
+    return this.security?.authHardening ?? this.defaultHardening;
   }
 
   /**

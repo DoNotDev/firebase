@@ -81,11 +81,17 @@ export interface BatchOptions {
 // Determine if we're in a browser
 const isClient = typeof window !== 'undefined';
 
+/** batchDelete input given as ids (decided by the first item, as the API documents). */
+function isIdList<T>(items: T[] | string[]): items is string[] {
+  return items.length > 0 && typeof items[0] === 'string';
+}
+
 // Server-only implementations
 const serverImplementations = {
   /**
    * Performs a batch write operation on multiple documents
    */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: interface-typed records have no implicit index signature; Record<string, unknown> would reject them
   async batchWrite<T extends Record<string, any>>(
     collection: string,
     items: T[],
@@ -173,7 +179,7 @@ const serverImplementations = {
             if (!docId && operation === 'create' && generateIds) {
               // Generate ID for create operations
               docId = firestore.collection(collection).doc().id;
-              item = { ...item, [idField]: docId } as T;
+              item = { ...item, [idField]: docId };
             } else if (!docId) {
               throw handleError(
                 new Error(`Missing ID for ${operation} operation (${idField})`),
@@ -263,6 +269,7 @@ const serverImplementations = {
   /**
    * Performs a batch create operation
    */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: interface-typed records have no implicit index signature; Record<string, unknown> would reject them
   async batchCreate<T extends Record<string, any>>(
     collection: string,
     items: T[],
@@ -281,6 +288,7 @@ const serverImplementations = {
   /**
    * Performs a batch update operation
    */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: interface-typed records have no implicit index signature; Record<string, unknown> would reject them
   async batchUpdate<T extends Record<string, any>>(
     collection: string,
     items: T[],
@@ -299,15 +307,17 @@ const serverImplementations = {
   /**
    * Performs a batch delete operation
    */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: interface-typed records have no implicit index signature; Record<string, unknown> would reject them
   async batchDelete<T extends Record<string, any>>(
     collection: string,
     items: T[] | string[],
     options: BatchOptions = {}
   ): Promise<BatchResult> {
     // If we have string IDs, convert to objects with ID field
-    if (items.length > 0 && typeof items[0] === 'string') {
+    if (isIdList(items)) {
       const idField = options.idField || 'id';
-      const objectItems = (items as string[]).map((id) => {
+      const objectItems = items.map((id) => {
+        // why: a delete only reads the id field; T is the caller's row type
         return { [idField]: id } as unknown as T;
       });
       return serverImplementations.batchWrite(
@@ -321,7 +331,7 @@ const serverImplementations = {
 
     return serverImplementations.batchWrite(
       collection,
-      items as T[],
+      items,
       'delete',
       undefined,
       options
@@ -347,6 +357,7 @@ const serverImplementations = {
   /**
    * Fetches multiple documents by ID in a single batch
    */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: not yet narrowed (any-audit 2026-11-11 follow-up)
   async bulkGet<T = Record<string, any>>(
     collection: string,
     ids: string[],
@@ -375,8 +386,8 @@ const serverImplementations = {
           .get();
 
         // Create a map of id -> document
-        const docMap = new Map<string, any>();
-        docs.forEach((doc: { id: string; data: () => any }) => {
+        const docMap = new Map<string, Record<string, unknown>>();
+        docs.forEach((doc) => {
           docMap.set(doc.id, doc.data());
         });
 
@@ -390,6 +401,7 @@ const serverImplementations = {
             ? transformFirestoreData({ id, ...data })
             : { id, ...data };
 
+          // why: T is caller-asserted; Firestore rows are not validated against it here
           return result as T;
         });
       });

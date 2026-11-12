@@ -68,7 +68,7 @@ export function createAbortController(options?: FirebaseCallOptions): {
  * @since 0.0.1
  * @author AMBROISE PARK Consulting
  */
-export function handleFirebaseError(error: any, context?: string): Error {
+export function handleFirebaseError(error: unknown, context?: string): Error {
   return handleError(error, {
     userMessage: context ? `Error during ${context}` : undefined,
     context: { operation: context },
@@ -133,7 +133,7 @@ export async function executeFirebaseOperation<T>(
  * @param error The error to check
  * @returns Whether the error is eligible for retry
  */
-function isRetryableError(error: any): boolean {
+function isRetryableError(error: unknown): boolean {
   // Non-retryable standard error codes
   const nonRetryableCodes = [
     'permission-denied',
@@ -143,18 +143,22 @@ function isRetryableError(error: any): boolean {
     'unauthenticated',
   ];
 
+  if (typeof error !== 'object' || error === null) return true;
+  const name = 'name' in error ? error.name : undefined;
+  const code = 'code' in error ? error.code : undefined;
+
   // Check if it's already been handled by central system
   if (
-    error &&
-    error.name === 'DoNotDevError' &&
-    nonRetryableCodes.includes(error.code)
+    name === 'DoNotDevError' &&
+    typeof code === 'string' &&
+    nonRetryableCodes.includes(code)
   ) {
     return false;
   }
 
   // Firebase-specific error codes - just check patterns
   // The actual mapping will be done by the central system
-  if (error && error.code) {
+  if (typeof code === 'string' && code) {
     // Network/server errors are retryable
     const retryablePatterns = [
       'unavailable',
@@ -168,7 +172,7 @@ function isRetryableError(error: any): boolean {
     ];
 
     return retryablePatterns.some((pattern) =>
-      error.code.toLowerCase().includes(pattern)
+      code.toLowerCase().includes(pattern)
     );
   }
 

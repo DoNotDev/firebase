@@ -66,6 +66,7 @@ import {
   writeBatch,
   transformFirestoreData,
   prepareForFirestore,
+  type DocumentData,
   type DocumentSnapshot,
   type QuerySnapshot,
   type QueryDocumentSnapshot,
@@ -73,7 +74,6 @@ import {
   type QueryConstraint,
   type Unsubscribe,
   type FirestoreError,
-  type WhereFilterOp,
   type OrderByDirection,
 } from './firestore';
 import { getFirebaseFirestore } from './firestore';
@@ -98,6 +98,22 @@ export type CollectionSubscriptionCallback<T> = (
   data: T[],
   error?: Error
 ) => void;
+
+/**
+ * A Firestore document as the caller's entity type.
+ * why: ICrudAdapter's `T` is caller-asserted; documents are schema-validated (when a schema is given), not checked against `T`.
+ */
+function asEntity<T>(row: Record<string, unknown>): T {
+  return row as T;
+}
+
+/**
+ * Query order direction for Firestore.
+ * why: QueryOrderBy.direction is public `'asc' | 'desc' | string`; Firestore rejects other values at runtime.
+ */
+function toOrderDirection(direction: string | undefined): OrderByDirection {
+  return (direction || 'asc') as OrderByDirection;
+}
 
 /**
  * Firestore backend adapter
@@ -175,9 +191,9 @@ export class FirestoreAdapter implements ICrudAdapter {
       data = transformFirestoreData(data);
       const parsed = schema
         ? validateWithSchema(schema, data, 'FirestoreAdapter.get')
-        : (data as Record<string, unknown>);
+        : data;
       // Include document ID in result
-      return { ...ensureSpreadable(parsed), id } as T;
+      return asEntity<T>({ ...ensureSpreadable(parsed), id });
     } catch (error) {
       // Distinguish "not found" from real errors
       // Firestore returns null for non-existent docs, but network/auth errors should throw
@@ -203,7 +219,8 @@ export class FirestoreAdapter implements ICrudAdapter {
         'FirestoreAdapter.set'
       );
       const docRef = doc(fs, collectionName, id);
-      const firestoreData = prepareForFirestore(validated) as any;
+      // why: set<T>'s `T` is unconstrained (ICrudAdapter), so TS cannot prove it is DocumentData
+      const firestoreData = prepareForFirestore(validated) as DocumentData;
       await setDoc(docRef, firestoreData);
     } catch (error) {
       throw wrapCrudError(error, 'FirestoreAdapter', 'set', collectionName, id);
@@ -311,15 +328,11 @@ export class FirestoreAdapter implements ICrudAdapter {
 
     // 1. Empty payload — no-op, no wire contact.
     if (inserts.length === 0 && updates.length === 0 && deletes.length === 0) {
-      return { insertedIds: [], updatedIds: [], deletedIds: [] };
+      return { insertedIds: [], updatedIds: [], deletedIds: [], failed: [] };
     }
 
     // 2. Collision rejection — fail loud before any write.
-    const collision = detectBulkCollisions({
-      inserts: inserts as Array<{ id?: string; [k: string]: unknown }>,
-      updates: updates as Array<{ id: string; patch: unknown }>,
-      deletes,
-    });
+    const collision = detectBulkCollisions({ inserts, updates, deletes });
     if (collision.where !== null) {
       throw new BulkCollisionError(collision.collisions, collision.where);
     }
@@ -334,16 +347,12 @@ export class FirestoreAdapter implements ICrudAdapter {
       const validatedInserts = inserts.map((row) =>
         schema
           ? validateWithSchema(schema, row, 'FirestoreAdapter.bulk')
-          : (row as Record<string, unknown>)
+          : row
       );
       const validatedUpdates = updates.map((u) => ({
         id: u.id,
         patch: schema
-          ? (validateWithSchema(
-              schema,
-              u.patch,
-              'FirestoreAdapter.bulk'
-            ) as Partial<T>)
+          ? validateWithSchema(schema, u.patch, 'FirestoreAdapter.bulk')
           : u.patch,
       }));
 
@@ -352,7 +361,7 @@ export class FirestoreAdapter implements ICrudAdapter {
       const userId = getFirebaseSDK().getCurrentUser()?.uid || 'anonymous';
 
       const insertsWithMetadata = validatedInserts.map((row) => ({
-        ...(row as Record<string, unknown>),
+        ...row,
         createdAt: now,
         updatedAt: now,
         createdById: userId,
@@ -362,7 +371,7 @@ export class FirestoreAdapter implements ICrudAdapter {
       const updatesWithMetadata = validatedUpdates.map((u) => ({
         id: u.id,
         patch: {
-          ...(u.patch as Record<string, unknown>),
+          ...u.patch,
           updatedAt: now,
           updatedById: userId,
         },
@@ -375,14 +384,14 @@ export class FirestoreAdapter implements ICrudAdapter {
       const insertedIds: string[] = [];
       for (const payload of insertsWithMetadata) {
         const ref = doc(colRef);
-        batch.set(ref, prepareForFirestore(payload) as any);
+        batch.set(ref, prepareForFirestore(payload));
         insertedIds.push(ref.id);
       }
 
       const updatedIds: string[] = [];
       for (const u of updatesWithMetadata) {
         const ref = doc(fs, collectionName, u.id);
-        batch.update(ref, prepareForFirestore(u.patch) as any);
+        batch.update(ref, prepareForFirestore(u.patch));
         updatedIds.push(u.id);
       }
 
@@ -397,7 +406,8 @@ export class FirestoreAdapter implements ICrudAdapter {
       await batch.commit();
 
       // 8. Return ids in input order per bucket.
-      return { insertedIds, updatedIds, deletedIds };
+      // One writeBatch commits all or nothing: no per-row failures
+      return { insertedIds, updatedIds, deletedIds, failed: [] };
     } catch (error) {
       // Preserve BulkCollisionError identity if it somehow bubbled through here.
       if (error instanceof BulkCollisionError) throw error;
@@ -423,7 +433,7 @@ export class FirestoreAdapter implements ICrudAdapter {
       // Item 50: schema is optional per ICrudAdapter — skip validation when undefined
       const validated = schema
         ? validateWithSchema(schema, data, 'FirestoreAdapter.add')
-        : (data as Record<string, unknown>);
+        : data;
       const colRef = await this.getCollectionRef(collectionName);
       if (!colRef)
         throw wrapCrudError(
@@ -446,12 +456,12 @@ export class FirestoreAdapter implements ICrudAdapter {
         updatedById: userId,
       };
 
-      const firestoreData = prepareForFirestore(dataWithMetadata) as any;
+      const firestoreData = prepareForFirestore(dataWithMetadata);
       const docRef = await addDoc(colRef, firestoreData);
-      const document = { ...dataWithMetadata, id: docRef.id } as Record<
-        string,
-        unknown
-      >;
+      const document: Record<string, unknown> = {
+        ...dataWithMetadata,
+        id: docRef.id,
+      };
       return { id: docRef.id, data: document };
     } catch (error) {
       throw wrapCrudError(error, 'FirestoreAdapter', 'add', collectionName);
@@ -473,14 +483,15 @@ export class FirestoreAdapter implements ICrudAdapter {
       if (options.where) {
         for (const clause of options.where) {
           constraints.push(
-            where(clause.field, clause.operator as WhereFilterOp, clause.value)
+            where(clause.field, clause.operator, clause.value)
           );
         }
       }
       if (options.orderBy) {
         for (const clause of options.orderBy) {
-          const direction = (clause.direction || 'asc') as OrderByDirection;
-          constraints.push(orderBy(clause.field, direction));
+          constraints.push(
+            orderBy(clause.field, toOrderDirection(clause.direction))
+          );
         }
       }
 
@@ -508,6 +519,8 @@ export class FirestoreAdapter implements ICrudAdapter {
       const snapshot = await getDocs(q);
 
       const results: T[] = [];
+      /** Document id of each entry in `results` (same index). */
+      const resultIds: string[] = [];
 
       snapshot.forEach((docSnapshot: QueryDocumentSnapshot) => {
         try {
@@ -518,12 +531,12 @@ export class FirestoreAdapter implements ICrudAdapter {
           data = transformFirestoreData(data);
           const parsed = schema
             ? validateWithSchema(schema, data, 'FirestoreAdapter.query')
-            : (data as Record<string, unknown>);
+            : data;
           // Include document ID in result for key/reference purposes
-          results.push({
-            ...ensureSpreadable(parsed),
-            id: docSnapshot.id,
-          } as T);
+          results.push(
+            asEntity<T>({ ...ensureSpreadable(parsed), id: docSnapshot.id })
+          );
+          resultIds.push(docSnapshot.id);
         } catch (parseError) {
           // Schema validation failed - throw instead of silently skipping
           throw wrapCrudError(
@@ -546,7 +559,7 @@ export class FirestoreAdapter implements ICrudAdapter {
       // the sentinel (limit+1-th) doc — the next page would skip 1 real row.
       const items = hasMore ? results.slice(0, options.limit) : results;
       const lastVisibleId =
-        items.length > 0 ? ((items[items.length - 1] as any).id ?? null) : null;
+        items.length > 0 ? (resultIds[items.length - 1] ?? null) : null;
 
       // Empty results are valid - return empty result, no errors, no logs
       return {
@@ -555,7 +568,7 @@ export class FirestoreAdapter implements ICrudAdapter {
         lastVisible: lastVisibleId,
         // FirestoreAdapter doesn't provide total count (would require separate count query)
         total: undefined,
-      } as PaginatedQueryResult<T>;
+      };
     } catch (error) {
       throw wrapCrudError(error, 'FirestoreAdapter', 'query', collectionName);
     }
@@ -583,9 +596,9 @@ export class FirestoreAdapter implements ICrudAdapter {
           data = transformFirestoreData(data);
           const validatedData = schema
             ? validateWithSchema(schema, data, 'FirestoreAdapter.subscribe')
-            : (data as Record<string, unknown>);
+            : data;
           // Include document ID in result
-          callback({ ...ensureSpreadable(validatedData), id } as T);
+          callback(asEntity<T>({ ...ensureSpreadable(validatedData), id }));
         } catch (error) {
           const wrappedError = wrapCrudError(
             error instanceof Error ? error : new Error(String(error)),
@@ -626,14 +639,15 @@ export class FirestoreAdapter implements ICrudAdapter {
       if (options.where) {
         for (const clause of options.where) {
           constraints.push(
-            where(clause.field, clause.operator as WhereFilterOp, clause.value)
+            where(clause.field, clause.operator, clause.value)
           );
         }
       }
       if (options.orderBy) {
         for (const clause of options.orderBy) {
-          const direction = (clause.direction || 'asc') as OrderByDirection;
-          constraints.push(orderBy(clause.field, direction));
+          constraints.push(
+            orderBy(clause.field, toOrderDirection(clause.direction))
+          );
         }
       }
       if (options.limit) {
@@ -655,9 +669,11 @@ export class FirestoreAdapter implements ICrudAdapter {
                     data,
                     'FirestoreAdapter.subscribeToCollection'
                   )
-                : (data as Record<string, unknown>);
+                : data;
               // Include document ID in result
-              results.push({ ...ensureSpreadable(parsed), id: doc.id } as T);
+              results.push(
+                asEntity<T>({ ...ensureSpreadable(parsed), id: doc.id })
+              );
             });
             callback(results);
           } catch (error) {

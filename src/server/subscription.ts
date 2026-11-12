@@ -154,8 +154,7 @@ export async function getUserSubscriptions(
 
     const snapshot = await query.get();
 
-    // Firestore Admin SDK QueryDocumentSnapshot has complex generics; inline structural type avoids import coupling
-    return snapshot.docs.map((doc: { id: any; data: () => any }) => {
+    return snapshot.docs.map((doc) => {
       return transformFirestoreData({
         id: doc.id,
         ...doc.data(),
@@ -333,6 +332,7 @@ export async function verifyAndHandleStripeWebhook(
   const { rawBody, signature, webhookSecret, ...subscriptionOptions } = options;
 
   // Stripe SDK is dynamically imported to keep it optional — no compile-time types available
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: Stripe is an optional dynamic import, not a dependency of this package; no static types
   let stripe: any; // Stripe instance type varies across SDK versions; dynamic import prevents static typing
   try {
     const stripeModule = await import('stripe');
@@ -340,6 +340,7 @@ export async function verifyAndHandleStripeWebhook(
     // 'placeholder' is safe here: constructEvent() only performs HMAC signature
     // verification using webhookSecret, never makes API calls with this key.
     stripe = new StripeClass('placeholder', {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: Stripe is an optional dynamic import, not a dependency of this package; no static types
       apiVersion: '2023-10-16' as any,
     }); // Stripe SDK apiVersion is a branded string literal that changes per SDK version
   } catch {
@@ -349,7 +350,7 @@ export async function verifyAndHandleStripeWebhook(
     });
   }
 
-  let event: any; // Stripe.Event type unavailable — stripe is dynamically imported (see above)
+  let event: StripeEventObject; // Stripe.Event type unavailable — stripe is dynamically imported (see above)
   try {
     // NC2 fix: this throws if the signature is invalid — forgery is rejected here
     event = stripe.webhooks.constructEvent(rawBody, signature, webhookSecret);

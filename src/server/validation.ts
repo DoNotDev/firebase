@@ -39,6 +39,7 @@ export {
  */
 export async function validateFirestoreDocument<T>(
   schema: dndevSchema<T>,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: exported signature; narrowing it is a breaking change for importers (deferred to a major, any-audit 2026-11-11)
   data: Record<string, any>,
   operation: 'create' | 'update',
   currentDocId?: string
@@ -106,12 +107,11 @@ export function enhanceSchema<T>(
       errorMessage?: string;
     }>;
     customValidate?: (
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: exported signature; narrowing it is a breaking change for importers (deferred to a major, any-audit 2026-11-11)
       data: Record<string, any>,
       operation: 'create' | 'update'
     ) => Promise<void>;
   }
 ): dndevSchema<T> {
-  const enhanced = schema as dndevSchema<T>;
-  enhanced.metadata = metadata;
-  return enhanced;
+  return Object.assign(schema, { metadata });
 }

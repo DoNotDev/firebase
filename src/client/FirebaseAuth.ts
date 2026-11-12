@@ -9,6 +9,8 @@
  * @author AMBROISE PARK Consulting
  */
 
+import type { FirebaseError } from 'firebase/app';
+
 import { toast } from '@donotdev/components';
 import type {
   AuthUser,
@@ -51,7 +53,10 @@ import {
   type AccountLinkingDependencies,
 } from './FirebaseAccountLinking';
 import {
+  firebaseErrorCode,
   handleSmartRecovery,
+  isFirebaseError,
+  nestedString,
   type SmartRecoveryDependencies,
 } from './FirebaseSmartRecovery';
 import {
@@ -78,16 +83,16 @@ import type { FirebaseUser, AuthCredential, UserInfo } from './sdk';
  */
 async function getExistingProvider(
   sdk: ReturnType<typeof getFirebaseSDK>,
-  error: any,
+  error: FirebaseError,
   email: string
 ): Promise<AuthPartnerId | null> {
   // Extract existing provider from error object (modular SDK)
   // OAuthProvider.credentialFromError() is the modern API - error.credential is empty
   const credentialFromError = OAuthProvider.credentialFromError(error);
   const existingProviderId =
-    error.customData?._tokenResponse?.verifiedProvider?.[0] ||
+    nestedString(error.customData, '_tokenResponse', 'verifiedProvider', '0') ||
     credentialFromError?.providerId ||
-    error.customData?.providerId;
+    nestedString(error.customData, 'providerId');
 
   // Note: fetchSignInMethodsForEmail removed - deprecated (email enumeration risk)
   // The above 3 methods should cover all cases for account-exists-with-different-credential
@@ -270,13 +275,16 @@ export class FirebaseAuth implements AuthProvider {
         toast('success', 'Signed in successfully!');
       }
       // Note: null redirectResult is normal (no redirect in progress), no action needed
-    } catch (error: any) {
+    } catch (error: unknown) {
       // Handle account linking error specifically (redirect flow)
-      if (error.code === 'auth/account-exists-with-different-credential') {
+      if (
+        isFirebaseError(error) &&
+        error.code === 'auth/account-exists-with-different-credential'
+      ) {
         // Use OAuthProvider.credentialFromError() for modular SDK
         const firebaseProviderId =
           OAuthProvider.credentialFromError(error)?.providerId ||
-          error.customData?._tokenResponse?.providerId;
+          nestedString(error.customData, '_tokenResponse', 'providerId');
         const partnerId = firebaseProviderId
           ? getAuthPartnerIdByFirebaseId(firebaseProviderId)
           : (safeSessionStorage.getItem(
@@ -310,7 +318,10 @@ export class FirebaseAuth implements AuthProvider {
       });
 
       // Only clear state for non-linking errors
-      if (error.code !== 'auth/account-exists-with-different-credential') {
+      if (
+        firebaseErrorCode(error) !==
+        'auth/account-exists-with-different-credential'
+      ) {
         try {
           this.clearAccountLinkingState();
           safeSessionStorage.removeItem('pendingAuthPartnerId');
@@ -343,6 +354,7 @@ export class FirebaseAuth implements AuthProvider {
    */
   private getAppConfig(): AppConfig | null {
     if (typeof globalThis !== 'undefined') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: build-injected global; a declare global here would leak into consumer type-checks (package ships src)
       const config = (globalThis as any)._DNDEV_APP_CONFIG_ as
         | AppConfig
         | undefined;
@@ -464,12 +476,14 @@ export class FirebaseAuth implements AuthProvider {
       // Extract subscription claims
       if (claims.subscription) {
         const subscriptionClaims = claims.subscription as SubscriptionClaims;
+        // `features` is not part of SubscriptionClaims; read it untyped from the token
+        const claimFeatures: unknown = Reflect.get(subscriptionClaims, 'features');
         subscription = {
           userId: user.id,
           tier: subscriptionClaims.tier || SUBSCRIPTION_TIERS.FREE,
           status: subscriptionClaims.status || 'active',
           isActive: subscriptionClaims.status === 'active',
-          features: (subscriptionClaims as any).features || [],
+          features: Array.isArray(claimFeatures) ? claimFeatures : [],
           subscriptionId: subscriptionClaims.subscriptionId || null,
           customerId: subscriptionClaims.customerId || user.id,
           subscriptionEnd: subscriptionClaims.subscriptionEnd || null,
@@ -490,13 +504,13 @@ export class FirebaseAuth implements AuthProvider {
           claims
         );
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       // Network errors are expected when Firebase isn't configured or offline
       // Fail silently to avoid noise in console
       const isNetworkError =
-        error?.code === 'auth/network-request-failed' ||
-        error?.originalCode === 'auth/network-request-failed' ||
-        error?.message?.includes('network');
+        firebaseErrorCode(error) === 'auth/network-request-failed' ||
+        nestedString(error, 'originalCode') === 'auth/network-request-failed' ||
+        nestedString(error, 'message')?.includes('network');
 
       if (!isNetworkError) {
         handleError(error, {
@@ -592,7 +606,7 @@ export class FirebaseAuth implements AuthProvider {
       toast('success', 'Signed in successfully!');
       this.storeState.setPartnerState('password', PARTNER_STATE.IDLE);
       return this.createAuthResult(result.user);
-    } catch (error: any) {
+    } catch (error: unknown) {
       // Use centralized smart recovery (already wraps errors)
       try {
         return await handleSmartRecovery(
@@ -648,7 +662,7 @@ export class FirebaseAuth implements AuthProvider {
       toast('success', 'Account created successfully!');
       this.storeState.setPartnerState('password', PARTNER_STATE.IDLE);
       return this.createAuthResult(result.user, true);
-    } catch (error: any) {
+    } catch (error: unknown) {
       try {
         const result = await handleSmartRecovery(
           error,
@@ -784,7 +798,7 @@ export class FirebaseAuth implements AuthProvider {
         await this.sdk.signInWithRedirect(provider);
         return null; // Redirect initiated
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       try {
         const result = await handleSmartRecovery(
           error,
@@ -865,15 +879,15 @@ export class FirebaseAuth implements AuthProvider {
       }
     } catch (error: unknown) {
       // Map common linking errors to user-friendly messages
-      const firebaseError = error as { code?: string };
+      const errorCode = firebaseErrorCode(error);
       let userMessage = 'Failed to link account';
       let context = {
         operation: 'linkWithPartner',
         partnerId,
-        errorCode: firebaseError.code,
+        errorCode,
       };
 
-      switch (firebaseError.code) {
+      switch (errorCode) {
         case 'auth/operation-not-allowed':
           userMessage =
             'Account linking is disabled. Contact support for assistance.';
@@ -914,10 +928,10 @@ export class FirebaseAuth implements AuthProvider {
    * @throws Error if authentication fails
    * @private
    */
-  private async handlePopupAuth(
+  private async handlePopupAuth<R>(
     partnerId: AuthPartnerId,
-    authPromise: () => Promise<any>
-  ): Promise<any> {
+    authPromise: () => Promise<R>
+  ): Promise<R | null> {
     // Clear any existing timeout before setting a new one
     this.clearPopupMonitoring();
 
@@ -931,13 +945,14 @@ export class FirebaseAuth implements AuthProvider {
       const result = await authPromise();
       this.clearPopupMonitoring();
       return result;
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.clearPopupMonitoring();
 
       // User cancelled - return null (not an error)
+      const code = firebaseErrorCode(error);
       if (
-        error.code === 'auth/popup-closed-by-user' ||
-        error.code === 'auth/cancelled-popup-request'
+        code === 'auth/popup-closed-by-user' ||
+        code === 'auth/cancelled-popup-request'
       ) {
         return null;
       }
@@ -981,12 +996,12 @@ export class FirebaseAuth implements AuthProvider {
       toast('success', 'Signed in with Google!');
       this.storeState.setPartnerState('google', PARTNER_STATE.IDLE);
       return this.createAuthResult(result.user);
-    } catch (error: any) {
+    } catch (error: unknown) {
       try {
         return await handleSmartRecovery(
           error,
           () => this.sdk.signInWithGoogleCredential(credential),
-          { partnerId: 'google', method: 'redirect' as AuthMethod },
+          { partnerId: 'google', method: 'redirect' },
           this.getSmartRecoveryDeps()
         );
       } catch (wrappedError) {
@@ -1016,12 +1031,12 @@ export class FirebaseAuth implements AuthProvider {
         return this.createAuthResult(result.user);
       }
       return null;
-    } catch (error: any) {
+    } catch (error: unknown) {
       try {
         return await handleSmartRecovery(
           error,
           () => this.sdk.getRedirectResult(),
-          { method: 'redirect' as AuthMethod },
+          { method: 'redirect' },
           this.getSmartRecoveryDeps()
         );
       } catch (wrappedError) {
@@ -1086,7 +1101,7 @@ export class FirebaseAuth implements AuthProvider {
 
       const hasNewProvider =
         user.providerData?.some(
-          (p: any) => p.providerId === newProviderConfig.firebaseProviderId
+          (p) => p.providerId === newProviderConfig.firebaseProviderId
         ) || false;
 
       if (hasNewProvider) {
@@ -1109,7 +1124,7 @@ export class FirebaseAuth implements AuthProvider {
 
       // Show success toast
       toast('success', 'Accounts linked successfully!');
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.clearAccountLinkingState();
       throw handleError(error, {
         userMessage: 'Account linking failed',
@@ -1180,7 +1195,7 @@ export class FirebaseAuth implements AuthProvider {
       toast('success', 'Signed in successfully!');
       this.storeState.setPartnerState('emailLink', PARTNER_STATE.IDLE);
       return this.createAuthResult(result.user);
-    } catch (error: any) {
+    } catch (error: unknown) {
       try {
         return await handleSmartRecovery(
           error,
@@ -1394,6 +1409,7 @@ export class FirebaseAuth implements AuthProvider {
    * @param forceRefresh - Force refresh token from server
    * @returns Token result with claims or null if no user
    */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: exported signature; narrowing it is a breaking change for importers (deferred to a major, any-audit 2026-11-11)
   async getIdTokenResult(forceRefresh = false): Promise<any | null> {
     this.ensureInitialized();
 
@@ -1419,6 +1435,7 @@ export class FirebaseAuth implements AuthProvider {
    *
    * @returns Custom claims object
    */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: exported signature; narrowing it is a breaking change for importers (deferred to a major, any-audit 2026-11-11)
   async getCustomClaims(): Promise<Record<string, any>> {
     this.ensureInitialized();
     this.initializeClaimsCache();
@@ -1449,6 +1466,7 @@ export class FirebaseAuth implements AuthProvider {
    * @param claim - Claim name to retrieve
    * @returns Claim value or null if not found
    */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: exported signature; narrowing it is a breaking change for importers (deferred to a major, any-audit 2026-11-11)
   async getCustomClaim(claim: string): Promise<any> {
     this.ensureInitialized();
 
@@ -1730,12 +1748,13 @@ export class FirebaseAuth implements AuthProvider {
         // Redirect initiated - page will reload after reauthentication
         return;
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       // User cancelled popup
+      const code = firebaseErrorCode(error);
       if (
-        error.code === 'auth/popup-closed-by-user' ||
-        error.code === 'auth/cancelled-popup-request' ||
-        error.code === 'auth/popup-blocked'
+        code === 'auth/popup-closed-by-user' ||
+        code === 'auth/cancelled-popup-request' ||
+        code === 'auth/popup-blocked'
       ) {
         throw new Error('REAUTH_CANCELLED');
       }
@@ -1835,9 +1854,9 @@ export class FirebaseAuth implements AuthProvider {
     try {
       // Try deletion first
       await performDeletion();
-    } catch (error: any) {
+    } catch (error: unknown) {
       // If requires recent login, handle reauthentication
-      if (error.code === 'auth/requires-recent-login') {
+      if (firebaseErrorCode(error) === 'auth/requires-recent-login') {
         const primaryProvider = this.getPrimaryProvider(user);
 
         if (!primaryProvider) {
@@ -1855,8 +1874,11 @@ export class FirebaseAuth implements AuthProvider {
             // Retry deletion after successful reauthentication
             await performDeletion();
             return;
-          } catch (reauthError: any) {
-            if (reauthError.message === 'REAUTH_CANCELLED') {
+          } catch (reauthError: unknown) {
+            if (
+              reauthError instanceof Error &&
+              reauthError.message === 'REAUTH_CANCELLED'
+            ) {
               throw new Error('REAUTH_CANCELLED');
             }
             throw handleError(reauthError, {
@@ -1914,6 +1936,7 @@ export class FirebaseAuth implements AuthProvider {
    * Set cached claims (for debug/testing)
    * @internal
    */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: exported signature; narrowing it is a breaking change for importers (deferred to a major, any-audit 2026-11-11)
   async setCachedClaims(claims: Record<string, any>): Promise<void> {
     this.initializeClaimsCache();
     if (this.claimsCache) {
@@ -1938,6 +1961,7 @@ export class FirebaseAuth implements AuthProvider {
     if (!this.store) return;
 
     // Reset all partner states to idle (DRY: use AUTH_PARTNERS schema)
+    // why (`as AuthPartnerId` below): Object.keys widens AUTH_PARTNERS keys to string
     Object.keys(AUTH_PARTNERS).forEach((partner) => {
       this.storeState.setPartnerState(
         partner as AuthPartnerId,
@@ -1992,7 +2016,7 @@ export class FirebaseAuth implements AuthProvider {
    * @private
    */
   private async handleAccountLinking(
-    error: any,
+    error: FirebaseError,
     attemptedProvider: AuthPartnerId,
     method: AuthMethod
   ): Promise<AuthResult | null> {
@@ -2015,7 +2039,7 @@ export class FirebaseAuth implements AuthProvider {
    * @throws Error if partner not supported
    * @private
    */
-  private createProviderFromConfig(partnerId: AuthPartnerId): any {
+  private createProviderFromConfig(partnerId: AuthPartnerId) {
     const config = AUTH_PARTNERS[partnerId];
     if (!config || !config.firebaseProviderId) {
       throw new Error(`Unsupported partner: ${partnerId}`);
@@ -2118,6 +2142,7 @@ export class FirebaseAuth implements AuthProvider {
    * @returns Firebase credential or null if creation fails
    * @private
    */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: exported signature; narrowing it is a breaking change for importers (deferred to a major, any-audit 2026-11-11)
   private createCredentialFromStoredData(data: any): AuthCredential | null {
     try {
       if (!data || !data.providerId) return null;

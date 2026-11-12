@@ -49,7 +49,7 @@ export class FirebaseCallableProvider implements ICallableProvider {
       const functions = await getFirebaseFunctions(this.region);
       const callableFn = httpsCallable<TReq, TRes>(functions, functionName);
       const result = await callableFn(data);
-      return result.data as TRes;
+      return result.data;
     } catch (error) {
       throw wrapCrudError(
         error instanceof Error ? error : new Error(String(error)),

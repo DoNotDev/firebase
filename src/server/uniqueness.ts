@@ -77,7 +77,7 @@ export async function createFirestoreValidator(): Promise<UniqueConstraintValida
     checkDuplicate: async (
       collection: string,
       field: string,
-      value: any,
+      value: unknown,
       currentDocId?: string
     ) => {
       // Handle null/undefined values (they can't be unique constraints)
@@ -91,8 +91,7 @@ export async function createFirestoreValidator(): Promise<UniqueConstraintValida
 
         // Check if any document (except the current one) has the same value
         return snapshot.docs.some(
-          (doc: { id: string; data: () => Record<string, unknown> }) =>
-            doc.id !== currentDocId && doc.data()[field] === value
+          (doc) => doc.id !== currentDocId && doc.data()[field] === value
         );
       } catch (error) {
         throw handleError(error, {
@@ -128,7 +127,7 @@ export async function createAdminFirestoreValidator(): Promise<UniqueConstraintV
     checkDuplicate: async (
       collectionName: string,
       field: string,
-      value: any,
+      value: unknown,
       currentDocId?: string
     ) => {
       // Handle null/undefined values (they can't be unique constraints)
@@ -144,7 +143,7 @@ export async function createAdminFirestoreValidator(): Promise<UniqueConstraintV
 
         // Check if any document (except the current one) has the same value
         return querySnapshot.docs.some(
-          (doc: any) => doc.id !== currentDocId && doc.data()[field] === value
+          (doc) => doc.id !== currentDocId && doc.data()[field] === value
         );
       } catch (error) {
         throw handleError(error, {
@@ -178,6 +177,7 @@ export async function validateUniqueness(
     field: string;
     errorMessage?: string;
   }>,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: exported signature; narrowing it is a breaking change for importers (deferred to a major, any-audit 2026-11-11)
   data: Record<string, any>,
   currentDocId?: string
 ): Promise<void> {
