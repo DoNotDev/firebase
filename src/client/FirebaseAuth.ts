@@ -18,7 +18,6 @@ import type {
   AuthPartnerId,
   AuthMethod,
   AuthProvider,
-  SubscriptionClaims,
   UserProfile,
   UserSubscription,
   AppConfig,
@@ -39,10 +38,10 @@ import {
   getAuthMethod,
   AUTH_PARTNER_STATE as PARTNER_STATE,
   EMAIL_VERIFICATION_STATUS,
+  FEATURE_STATUS,
   AUTH_PARTNERS,
-  SUBSCRIPTION_TIERS,
-  USER_ROLES,
-  createDefaultSubscriptionClaims,
+  resolveUserSubscription,
+  hasTierAccess,
   createDefaultUserProfile,
   hasRoleAccess,
 } from '@donotdev/core';
@@ -142,6 +141,7 @@ export class FirebaseAuth implements AuthProvider {
   private store: (AuthState & AuthActions) | null = null;
   private popupTimeout: ReturnType<typeof setTimeout> | null = null;
   private claimsCache: ClaimsCache | null = null;
+  private authGeneration = 0;
   /** Optional security context - injected via setSecurity() */
   private security: SecurityContext | null = null;
 
@@ -401,15 +401,31 @@ export class FirebaseAuth implements AuthProvider {
       async (firebaseUser: FirebaseUser | null) => {
         // Update store FIRST
         if (firebaseUser) {
-          await this.handleAuthStateChange(firebaseUser);
+          const generation = this.authGeneration + 1;
+          try {
+            if (!(await this.handleAuthStateChange(firebaseUser))) return;
+          } catch (error) {
+            // SDK listeners cannot propagate failures to useAuth initialization.
+            // Resolve explicitly to an error state, never leave stale access/loading.
+            if (generation !== this.authGeneration) return;
+            this.handleSignOut();
+            if (this.store) {
+              this.storeState.setAuthError(error instanceof Error ? error : new Error(String(error)));
+              this.storeState.setStatus(FEATURE_STATUS.ERROR);
+            }
+            callback(null);
+            return;
+          }
         } else {
           this.handleSignOut();
         }
 
+        const generation = this.authGeneration;
         // THEN check for pending linking (user now in store)
         if (firebaseUser) {
           await this.checkPendingLinking();
         }
+        if (generation !== this.authGeneration) return;
 
         // Notify callback
         const authUser = firebaseUser
@@ -432,94 +448,31 @@ export class FirebaseAuth implements AuthProvider {
    * @private
    */
   private async handleAuthStateChange(
-    firebaseUser: FirebaseUser
-  ): Promise<void> {
-    if (!this.store) return;
+    firebaseUser: FirebaseUser,
+    refreshedClaims?: Record<string, unknown>,
+    generation = ++this.authGeneration
+  ): Promise<boolean> {
+    if (!this.store || generation !== this.authGeneration) return false;
+
+    // onAuthStateChanged is not a token listener: normal initialization must
+    // force fresh claims. An explicit refresh already supplies its token result.
+    const claims = refreshedClaims ??
+      (await this.sdk.getIdTokenResult(firebaseUser, true)).claims;
+    const currentUser = await this.sdk.getCurrentUser();
+    if (generation !== this.authGeneration || currentUser !== firebaseUser) {
+      return false;
+    }
 
     const user = this.convertToAuthUser(firebaseUser);
-
-    // Initialize and update ClaimsCache userId
-    this.initializeClaimsCache();
-    if (this.claimsCache) {
-      this.claimsCache.setUserId(user.id);
-    }
-
-    // Clear all partner states on successful authentication
-    this.storeState.clearAllPartnerStates();
-
-    // Get custom claims for subscription data (source of truth)
-    let subscription: UserSubscription = {
-      userId: user.id,
-      tier: SUBSCRIPTION_TIERS.FREE,
-      status: 'active',
-      isActive: true,
-      features: [],
-      subscriptionId: null,
-      customerId: user.id,
-      subscriptionEnd: null,
-      cancelAtPeriodEnd: false,
-      updatedAt: new Date().toISOString(),
-    };
-
-    // Extract role from custom claims
-    let userRole: string = USER_ROLES.USER;
-
+    let subscription: UserSubscription;
     try {
-      const tokenResult = await this.sdk.getIdTokenResult(firebaseUser, true);
-      const claims = tokenResult?.claims || {};
-
-      // Debug: Log claims to help diagnose issues
-      if (isDev()) {
-        console.log('[FirebaseAuth] Custom claims:', claims);
-      }
-
-      // Extract subscription claims
-      if (claims.subscription) {
-        const subscriptionClaims = claims.subscription as SubscriptionClaims;
-        // `features` is not part of SubscriptionClaims; read it untyped from the token
-        const claimFeatures: unknown = Reflect.get(subscriptionClaims, 'features');
-        subscription = {
-          userId: user.id,
-          tier: subscriptionClaims.tier || SUBSCRIPTION_TIERS.FREE,
-          status: subscriptionClaims.status || 'active',
-          isActive: subscriptionClaims.status === 'active',
-          features: Array.isArray(claimFeatures) ? claimFeatures : [],
-          subscriptionId: subscriptionClaims.subscriptionId || null,
-          customerId: subscriptionClaims.customerId || user.id,
-          subscriptionEnd: subscriptionClaims.subscriptionEnd || null,
-          cancelAtPeriodEnd: Boolean(subscriptionClaims.cancelAtPeriodEnd),
-          updatedAt: subscriptionClaims.updatedAt || new Date().toISOString(),
-        };
-      }
-
-      // Extract role from custom claims using centralized utility
-      // Handles 'role' string and legacy boolean flags (isAdmin, isSuper)
-      userRole = getRoleFromClaims(claims);
-
-      if (isDev()) {
-        console.log(
-          '[FirebaseAuth] Role extracted:',
-          userRole,
-          'from claims:',
-          claims
-        );
-      }
-    } catch (error: unknown) {
-      // Network errors are expected when Firebase isn't configured or offline
-      // Fail silently to avoid noise in console
-      const isNetworkError =
-        firebaseErrorCode(error) === 'auth/network-request-failed' ||
-        nestedString(error, 'originalCode') === 'auth/network-request-failed' ||
-        nestedString(error, 'message')?.includes('network');
-
-      if (!isNetworkError) {
-        handleError(error, {
-          userMessage: 'Failed to get custom claims',
-          context: { operation: 'getCustomClaims' },
-          severity: 'warning',
-        });
-      }
+      subscription = resolveUserSubscription(user.id, claims.subscription);
+    } catch (error) {
+      this.storeState.setUnauthenticated();
+      throw error;
     }
+    const userRole = getRoleFromClaims(claims);
+    user.customClaims = claims;
 
     // Set role on user object
     user.role = userRole;
@@ -543,8 +496,12 @@ export class FirebaseAuth implements AuthProvider {
       console.log('[FirebaseAuth] User profile role:', profile.role);
     }
 
-    // Update store via domain method
+    // Mutate cache/store only after asynchronous claims and identity checks.
+    this.initializeClaimsCache();
+    this.claimsCache?.setUserId(user.id);
+    this.storeState.clearAllPartnerStates();
     this.storeState.setAuthenticated(user, subscription, profile);
+    return true;
   }
 
   /**
@@ -555,6 +512,7 @@ export class FirebaseAuth implements AuthProvider {
    * @private
    */
   private handleSignOut(): void {
+    ++this.authGeneration;
     if (!this.store) return;
 
     // Update ClaimsCache userId
@@ -727,15 +685,22 @@ export class FirebaseAuth implements AuthProvider {
     }
   }
 
-  /** AuthProvider: refresh token and return it */
+  /** AuthProvider: refresh and apply the complete canonical auth state before returning the token. */
   async refreshToken(): Promise<string | null> {
+    const generation = ++this.authGeneration;
     const user = await this.sdk.getCurrentUser();
-    if (!user) return null;
-    try {
-      return await this.sdk.getIdToken(user, true);
-    } catch {
+    if (generation !== this.authGeneration) return null;
+    if (!user) {
+      this.handleSignOut();
       return null;
     }
+    const result = await this.sdk.getIdTokenResult(user, true);
+    if (!(await this.handleAuthStateChange(user, result.claims, generation))) {
+      return null;
+    }
+    if (generation !== this.authGeneration) return null;
+    if (this.claimsCache) await this.claimsCache.setClaims(result.claims);
+    return generation === this.authGeneration ? result.token : null;
   }
 
   // ==========================================================================
@@ -1531,34 +1496,14 @@ export class FirebaseAuth implements AuthProvider {
     this.ensureInitialized();
     this.initializeClaimsCache();
 
-    try {
-      const claims = await this.getCustomClaims();
-      const realTier = claims.subscription?.tier;
-
-      if (this.store && realTier) {
-        const currentSubscription = this.storeState.userSubscription;
-        if (currentSubscription) {
-          this.storeState.setAuthenticated(
-            this.storeState.user!,
-            { ...currentSubscription, tier: realTier },
-            this.storeState.userProfile!
-          );
-        }
-      }
-
-      return realTier === tier;
-    } catch (error) {
-      const config = this.getAppConfig();
-      const offlineTrustEnabled =
-        config?.features?.offlineTrustEnabled ?? false;
-      const online = isClient() ? navigator.onLine : false;
-      if (!offlineTrustEnabled && !online) {
-        throw handleError(error, {
-          userMessage: 'Failed to verify subscription tier',
-        });
-      }
-      return false;
-    }
+    const generation = this.authGeneration;
+    const firebaseUser = await this.sdk.getCurrentUser();
+    if (!firebaseUser || generation !== this.authGeneration) return false;
+    const claims = await this.getCustomClaims();
+    if (!(await this.handleAuthStateChange(firebaseUser, claims, generation))) return false;
+    if (generation !== this.authGeneration) return false;
+    const subscription = resolveUserSubscription(firebaseUser.uid, claims.subscription);
+    return hasTierAccess(subscription.tier, tier);
   }
 
   /**
@@ -1592,14 +1537,14 @@ export class FirebaseAuth implements AuthProvider {
     this.initializeClaimsCache();
 
     const cachedClaims = this.storeState.getCustomClaimsLocal();
-    const cachedFeatures = cachedClaims?.features || [];
+    const cachedFeatures: unknown = cachedClaims?.features;
     const hasCachedFeature =
       Array.isArray(cachedFeatures) && cachedFeatures.includes(feature);
 
     if (!this.claimsCache) {
       try {
         const claims = await this.getCustomClaims();
-        const features = claims.features || [];
+        const features: unknown = claims.features;
         return Array.isArray(features) && features.includes(feature);
       } catch (error) {
         throw handleError(error, {
@@ -1615,7 +1560,7 @@ export class FirebaseAuth implements AuthProvider {
     if (online) {
       try {
         const claims = await this.getCustomClaims();
-        const features = claims.features || [];
+        const features: unknown = claims.features;
         const hasVerifiedFeature =
           Array.isArray(features) && features.includes(feature);
 
@@ -1646,7 +1591,9 @@ export class FirebaseAuth implements AuthProvider {
    * @returns AuthUser or null if not authenticated
    */
   async getCurrentUser(): Promise<AuthUser | null> {
+    const generation = this.authGeneration;
     const firebaseUser = await this.sdk.getCurrentUser();
+    if (generation !== this.authGeneration) return null;
     return firebaseUser ? this.convertToAuthUser(firebaseUser) : null;
   }
 
@@ -1660,6 +1607,7 @@ export class FirebaseAuth implements AuthProvider {
    */
   async signOut(): Promise<void> {
     this.ensureInitialized();
+    ++this.authGeneration;
 
     // Clear popup monitoring
     this.clearPopupMonitoring();

@@ -30,6 +30,7 @@
 import type { Firestore } from 'firebase/firestore';
 
 import {
+  AtomicBulkError,
   BulkCollisionError,
   detectBulkCollisions,
   wrapCrudError,
@@ -40,6 +41,9 @@ import {
 import type {
   BulkOperations,
   BulkResult,
+  BulkAcrossResult,
+  PreparedAtomicBatch,
+  AtomicBulkExecutionPlan,
   CrudOperationOptions,
   dndevSchema,
   ICrudAdapter,
@@ -115,6 +119,197 @@ function toOrderDirection(direction: string | undefined): OrderByDirection {
   return (direction || 'asc') as OrderByDirection;
 }
 
+// Support envelope, not inferred SDK wire sizes. The installed @firebase/firestore
+// writeBatch declaration documents 500 writes. The stricter payload/depth/path
+// budgets below are adapter policy, deliberately below backend request/document
+// limits: https://firebase.google.com/docs/firestore/quotas . Native rules/index
+// limits can still reject the whole commit. Never chunk an oversized request.
+const ATOMIC_SUPPORT = {
+  writes: 500,
+  requestBudget: 1024 * 1024,
+  documentBudget: 256 * 1024,
+  pathBytes: 4096,
+  segmentBytes: 1500,
+  depth: 16,
+} as const;
+
+const atomicEncoder = new TextEncoder();
+const atomicDecoder = new TextDecoder('utf-8', { ignoreBOM: true });
+
+function atomicStringBytes(value: string): number {
+  const bytes = atomicEncoder.encode(value);
+  if (atomicDecoder.decode(bytes) !== value) {
+    throw new Error('Atomic Firestore strings must be valid UTF-8');
+  }
+  return bytes.length;
+}
+
+function validateAtomicSegment(segment: string): void {
+  if (!segment || segment.includes('/') || segment === '.' || segment === '..' ||
+      /^__.*__$/.test(segment) || atomicStringBytes(segment) > ATOMIC_SUPPORT.segmentBytes) {
+    throw new Error('Invalid atomic Firestore collection/document path segment');
+  }
+}
+
+// Deliberately support JSON-like data plus Dates, not transforms, SDK references,
+// class instances, undefined, cycles or nested arrays. No string-reference remap.
+// Each value/key gets generous encoding overhead; this is a conservative support
+// budget, not a claim to reproduce the SDK's protobuf request serialization.
+function atomicValueBudget(value: unknown, depth = 0, inArray = false, fieldPathBytes = 0): number {
+  if (depth > ATOMIC_SUPPORT.depth) throw new Error('Atomic Firestore nesting limit exceeded');
+  if (value === null || typeof value === 'boolean') return 64;
+  if (typeof value === 'string') return 64 + atomicStringBytes(value) * 6;
+  if (typeof value === 'number' && Number.isFinite(value)) return 64;
+  if (value instanceof Date && Number.isFinite(value.getTime())) return 128;
+  if (Array.isArray(value)) {
+    if (inArray) throw new Error('Atomic Firestore nested arrays are unsupported');
+    return 64 + value.reduce((size, item) => size + atomicValueBudget(item, depth + 1, true, fieldPathBytes), 0);
+  }
+  if (value && typeof value === 'object' &&
+      (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)) {
+    return 64 + Object.entries(value).reduce((size, [key, item]) => {
+      if (!key || /^__.*__$/.test(key) || atomicStringBytes(key) > ATOMIC_SUPPORT.segmentBytes) {
+        throw new Error('Unsupported atomic Firestore field name');
+      }
+      // Budget quoted/escaped field-path segments as well as individual names.
+      const nextPathBytes = fieldPathBytes + atomicStringBytes(key) * 2 + 3;
+      if (nextPathBytes > ATOMIC_SUPPORT.segmentBytes) {
+        throw new Error('Atomic Firestore field path support budget exceeded');
+      }
+      return size + 64 + atomicStringBytes(key) * 6 + atomicValueBudget(item, depth + 1, false, nextPathBytes);
+    }, 0);
+  }
+  throw new Error('Unsupported atomic Firestore value; use JSON-like data or valid Dates');
+}
+
+function isAtomicPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) &&
+    (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+}
+
+function validateAtomicInput(batches: unknown): asserts batches is PreparedAtomicBatch[] {
+  if (!Array.isArray(batches)) throw new Error('Atomic Firestore batches must be an array');
+  for (const batch of batches) {
+    if (!isAtomicPlainObject(batch) || typeof batch.collection !== 'string' || !batch.collection) {
+      throw new Error('Atomic Firestore batch must have a collection');
+    }
+    for (const bucket of ['inserts', 'updates', 'deletes'] as const) {
+      if (Object.hasOwn(batch, bucket) && !Array.isArray(batch[bucket])) {
+        throw new Error('Atomic Firestore operation buckets must be arrays');
+      }
+    }
+    for (const row of (batch.inserts as unknown[] | undefined) ?? []) {
+      if (!isAtomicPlainObject(row) || typeof row.id !== 'string') {
+        throw new Error('Atomic Firestore inserts require an object with an ID');
+      }
+    }
+    for (const update of (batch.updates as unknown[] | undefined) ?? []) {
+      if (!isAtomicPlainObject(update) || Object.keys(update).length !== 2 ||
+          !Object.hasOwn(update, 'id') || !Object.hasOwn(update, 'patch') ||
+          typeof update.id !== 'string' || !isAtomicPlainObject(update.patch)) {
+        throw new Error('Atomic Firestore updates require exactly an ID and a patch');
+      }
+    }
+    for (const id of (batch.deletes as unknown[] | undefined) ?? []) {
+      if (typeof id !== 'string') throw new Error('Atomic Firestore deletes require IDs');
+    }
+  }
+}
+
+type AtomicWrite = {
+  collection: string;
+  id: string;
+  operation: 'set' | 'update' | 'delete';
+  data?: DocumentData;
+};
+
+/** Validate and snapshot the entire request without opening a native batch. */
+function prepareAtomicWrites(batches: PreparedAtomicBatch[], userId = 'anonymous'): {
+  writes: AtomicWrite[];
+  result: BulkAcrossResult;
+} {
+  validateAtomicInput(batches);
+  const writes: AtomicWrite[] = [];
+  const result: BulkAcrossResult = { results: Object.create(null) };
+  const collections = new Set<string>();
+  const targets = new Set<string>();
+  let budget = 0;
+  const now = new Date().toISOString();
+
+  for (const batch of batches) {
+    const segments = batch.collection.split('/');
+    if (segments.length % 2 !== 1 || segments.length > 199 ||
+        atomicStringBytes(batch.collection) > ATOMIC_SUPPORT.pathBytes || collections.has(batch.collection)) {
+      throw new Error('Atomic Firestore requires unique valid collection paths');
+    }
+    segments.forEach(validateAtomicSegment);
+    collections.add(batch.collection);
+    const ids: BulkResult = { insertedIds: [], updatedIds: [], deletedIds: [], failed: [] };
+    result.results[batch.collection] = ids;
+
+    const stage = (id: string, operation: AtomicWrite['operation'], data?: Record<string, unknown>) => {
+      if (typeof id !== 'string') throw new Error('Atomic Firestore IDs must be explicit strings');
+      validateAtomicSegment(id);
+      const path = `${batch.collection}/${id}`;
+      if (atomicStringBytes(path) > ATOMIC_SUPPORT.pathBytes || targets.has(path)) {
+        throw new Error('Atomic Firestore target is duplicated or exceeds path support limit');
+      }
+      targets.add(path);
+      let payload: DocumentData | undefined;
+      if (operation !== 'delete') {
+        if (!data || Array.isArray(data) ||
+            (Object.getPrototypeOf(data) !== Object.prototype && Object.getPrototypeOf(data) !== null)) {
+          throw new Error('Atomic Firestore payload must be a plain object');
+        }
+        if (Object.hasOwn(data, 'id') && data.id !== id) {
+          throw new Error('Atomic Firestore payload cannot change technical identity');
+        }
+        const { id: _technicalId, ...fields } = data;
+        // Validate before preparation: the shared converter otherwise flattens SDK
+        // transforms/references and silently drops unsupported undefined values.
+        atomicValueBudget(fields);
+        payload = prepareForFirestore({
+          ...(operation === 'set' ? { createdAt: now, createdById: userId } : {}),
+          updatedAt: now,
+          updatedById: userId,
+          ...fields,
+        });
+        if (operation === 'update') {
+          const paths = new Set(Object.keys(payload));
+          for (const fieldPath of paths) {
+            const parts = fieldPath.split('.');
+            if (/[~*/\[\]]/.test(fieldPath) || fieldPath.startsWith('id.') ||
+                parts.some((part) => !part || /^__.*__$/.test(part)) ||
+                parts.some((_part, index) => index > 0 && paths.has(parts.slice(0, index).join('.')))) {
+              throw new Error('Unsupported or overlapping atomic Firestore update field path');
+            }
+          }
+        }
+      }
+      const size = 1024 + atomicStringBytes(path) * 6 + (payload ? atomicValueBudget(payload) : 0);
+      if (size > ATOMIC_SUPPORT.documentBudget) throw new Error('Atomic Firestore document support budget exceeded');
+      budget += size;
+      writes.push({ collection: batch.collection, id, operation, data: payload });
+      if (writes.length > ATOMIC_SUPPORT.writes || budget > ATOMIC_SUPPORT.requestBudget) {
+        throw new Error('Atomic Firestore write count or request support budget exceeded');
+      }
+    };
+    for (const row of batch.inserts ?? []) {
+      stage(row.id, 'set', row);
+      ids.insertedIds.push(row.id);
+    }
+    for (const update of batch.updates ?? []) {
+      stage(update.id, 'update', update.patch);
+      ids.updatedIds.push(update.id);
+    }
+    for (const id of batch.deletes ?? []) {
+      stage(id, 'delete');
+      ids.deletedIds.push(id);
+    }
+  }
+  return { writes, result };
+}
+
 /**
  * Firestore backend adapter
  * Works with any collection dynamically (collection name passed per operation)
@@ -124,6 +319,67 @@ function toOrderDirection(direction: string | undefined): OrderByDirection {
  * @author AMBROISE PARK Consulting
  */
 export class FirestoreAdapter implements ICrudAdapter {
+  /**
+   * Single-database, cross-collection native atomic writes. Preflight is local
+   * and side-effect free. Each plan owns its validated snapshot and commits one
+   * batch. Insert means native set (may overwrite), update
+   * requires an existing document, and deleting a missing document is a no-op.
+   *
+   * Supports explicit IDs and JSON-like values/valid Dates within ATOMIC_SUPPORT;
+   * SDK transforms/references and larger work are rejected, never chunked. String
+   * references are retained verbatim. Prepared metadata is preserved; missing
+   * timestamp metadata is populated locally. The signed-out state or UID is
+   * checked at preflight and execution checkpoints, not frozen continuously;
+   * same-UID token refreshes are allowed and session/claims are not snapshotted.
+   * Firestore Rules determine permissions at the backend. All commit rejections
+   * are conservatively unknown, including lost replies; staging/preflight failures
+   * are definitively not-committed. No automatic retry.
+   */
+  private createAtomicPlan(batches: PreparedAtomicBatch[]): AtomicBulkExecutionPlan {
+    let userId: string | null;
+    let prepared: ReturnType<typeof prepareAtomicWrites>;
+    try {
+      userId = getFirebaseSDK().getCurrentUser()?.uid ?? null;
+      prepared = prepareAtomicWrites(batches, userId ?? 'anonymous');
+    } catch (cause) {
+      throw new AtomicBulkError('Firestore atomic preflight rejected', 'not-committed', cause);
+    }
+    const { writes, result } = prepared;
+    let execution: Promise<BulkAcrossResult> | undefined;
+    const execute = async (): Promise<BulkAcrossResult> => {
+      let commitStarted = false;
+      try {
+        if ((getFirebaseSDK().getCurrentUser()?.uid ?? null) !== userId) throw new Error('Atomic auth identity changed after preflight');
+        if (writes.length === 0) return result;
+        const fs = await this.requireFirestore('atomicBulkAcross', '*');
+        // Auth may change across the initialization await; never stage under a different actor.
+        if ((getFirebaseSDK().getCurrentUser()?.uid ?? null) !== userId) throw new Error('Atomic auth identity changed before staging');
+        // Construct every reference before native batch creation. There is never
+        // a per-collection bulk call, chunk boundary or generated replacement ID.
+        const referenced = writes.map((write) => ({ ...write, ref: doc(fs, write.collection, write.id) }));
+        const batch = writeBatch(fs);
+        for (const write of referenced) {
+          if (write.operation === 'delete') batch.delete(write.ref);
+          else if (write.operation === 'set' && write.data) batch.set(write.ref, write.data);
+          else if (write.operation === 'update' && write.data) batch.update(write.ref, write.data);
+          else throw new Error('Atomic Firestore write is missing its payload');
+        }
+        if ((getFirebaseSDK().getCurrentUser()?.uid ?? null) !== userId) throw new Error('Atomic auth identity changed before commit');
+        commitStarted = true;
+        await batch.commit();
+        return result;
+      } catch (cause) {
+        throw new AtomicBulkError('Firestore atomic execution failed', commitStarted ? 'unknown' : 'not-committed', cause);
+      }
+    };
+    return Object.freeze({ execute: () => execution ??= execute() });
+  }
+
+  readonly atomicBulkAcross: NonNullable<ICrudAdapter['atomicBulkAcross']> = {
+    preflight: async (batches) => this.createAtomicPlan(batches),
+    execute: async (batches) => this.createAtomicPlan(batches).execute(),
+  };
+
   private firestore: Firestore | undefined;
 
   private firestoreInitPromise: Promise<boolean> | null = null;
@@ -209,7 +465,7 @@ export class FirestoreAdapter implements ICrudAdapter {
     id: string,
     data: T,
     schema: dndevSchema<T>
-  ): Promise<void> {
+  ): Promise<Record<string, unknown>> {
     // W7 fix: throw instead of silent no-op when Firestore is unavailable
     const fs = await this.requireFirestore('set', collectionName);
     try {
@@ -219,9 +475,20 @@ export class FirestoreAdapter implements ICrudAdapter {
         'FirestoreAdapter.set'
       );
       const docRef = doc(fs, collectionName, id);
+      // Technical fields client-side, the same policy as add and the atomic writes.
+      const now = new Date().toISOString();
+      const userId = getFirebaseSDK().getCurrentUser()?.uid || 'anonymous';
       // why: set<T>'s `T` is unconstrained (ICrudAdapter), so TS cannot prove it is DocumentData
-      const firestoreData = prepareForFirestore(validated) as DocumentData;
+      const firestoreData = prepareForFirestore({
+        ...(validated as Record<string, unknown>),
+        createdAt: now,
+        createdById: userId,
+        updatedAt: now,
+        updatedById: userId,
+      }) as DocumentData;
       await setDoc(docRef, firestoreData);
+      // Nothing is set server-side on this path: the payload is the stored document.
+      return { ...transformFirestoreData(firestoreData), id };
     } catch (error) {
       throw wrapCrudError(error, 'FirestoreAdapter', 'set', collectionName, id);
     }
@@ -231,13 +498,20 @@ export class FirestoreAdapter implements ICrudAdapter {
     collectionName: string,
     id: string,
     data: Partial<T>
-  ): Promise<void> {
+  ): Promise<Record<string, unknown>> {
     // W7 fix: throw instead of silent no-op when Firestore is unavailable
     const fs = await this.requireFirestore('update', collectionName);
     try {
       const docRef = doc(fs, collectionName, id);
-      const firestoreData = prepareForFirestore(data);
+      // Technical fields client-side, the same policy as add and the atomic writes.
+      const firestoreData = prepareForFirestore({
+        ...(data as Record<string, unknown>),
+        updatedAt: new Date().toISOString(),
+        updatedById: getFirebaseSDK().getCurrentUser()?.uid || 'anonymous',
+      });
       await updateDoc(docRef, firestoreData);
+      // Nothing is set server-side on this path: the patch is what was stored.
+      return { ...transformFirestoreData(firestoreData), id };
     } catch (error) {
       throw wrapCrudError(
         error,
