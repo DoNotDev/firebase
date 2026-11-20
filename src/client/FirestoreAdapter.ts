@@ -55,7 +55,6 @@ import type {
 import {
   doc,
   getDoc,
-  getDocs,
   setDoc,
   updateDoc,
   deleteDoc,
@@ -65,7 +64,6 @@ import {
   where,
   orderBy,
   limit,
-  startAfter,
   onSnapshot,
   writeBatch,
   transformFirestoreData,
@@ -78,9 +76,9 @@ import {
   type QueryConstraint,
   type Unsubscribe,
   type FirestoreError,
-  type OrderByDirection,
 } from './firestore';
 import { getFirebaseFirestore } from './firestore';
+import { asEntity, queryFirestore, toOrderDirection } from './firestoreQuery';
 import { getFirebaseSDK } from './sdk';
 
 /**
@@ -102,22 +100,6 @@ export type CollectionSubscriptionCallback<T> = (
   data: T[],
   error?: Error
 ) => void;
-
-/**
- * A Firestore document as the caller's entity type.
- * why: ICrudAdapter's `T` is caller-asserted; documents are schema-validated (when a schema is given), not checked against `T`.
- */
-function asEntity<T>(row: Record<string, unknown>): T {
-  return row as T;
-}
-
-/**
- * Query order direction for Firestore.
- * why: QueryOrderBy.direction is public `'asc' | 'desc' | string`; Firestore rejects other values at runtime.
- */
-function toOrderDirection(direction: string | undefined): OrderByDirection {
-  return (direction || 'asc') as OrderByDirection;
-}
 
 // Support envelope, not inferred SDK wire sizes. The installed @firebase/firestore
 // writeBatch declaration documents 500 writes. The stricter payload/depth/path
@@ -750,102 +732,7 @@ export class FirestoreAdapter implements ICrudAdapter {
   ): Promise<PaginatedQueryResult<T>> {
     // Item 53: throw on failure like other methods, instead of silently returning empty
     const fs = await this.requireFirestore('query', collectionName);
-    const colRef = collection(fs, collectionName);
-
-    try {
-      const constraints: QueryConstraint[] = [];
-      if (options.where) {
-        for (const clause of options.where) {
-          constraints.push(
-            where(clause.field, clause.operator, clause.value)
-          );
-        }
-      }
-      if (options.orderBy) {
-        for (const clause of options.orderBy) {
-          constraints.push(
-            orderBy(clause.field, toOrderDirection(clause.direction))
-          );
-        }
-      }
-
-      // Cursor pagination: value of the first orderBy field from the previous page's lastVisible
-      const cursor = options.startAfter ?? null;
-      if (cursor) {
-        // NW9 fix: doc(colRef, cursor) ensures the cursor ID is resolved within
-        // collectionName — cross-collection IDs resolve to a different path and
-        // Firestore will return an empty snapshot rather than throwing, silently
-        // skipping data. Building the ref from colRef (not a root doc()) binds it
-        // to the correct collection so mismatched cursors are caught at getDoc time.
-        const startAfterDoc = await getDoc(doc(colRef, cursor));
-        if (startAfterDoc.exists()) {
-          constraints.push(startAfter(startAfterDoc));
-        }
-      }
-
-      // Request limit+1 to detect hasMore
-      const requestLimit = options.limit ? options.limit + 1 : undefined;
-      if (requestLimit) {
-        constraints.push(limit(requestLimit));
-      }
-
-      const q = query(colRef, ...constraints);
-      const snapshot = await getDocs(q);
-
-      const results: T[] = [];
-      /** Document id of each entry in `results` (same index). */
-      const resultIds: string[] = [];
-
-      snapshot.forEach((docSnapshot: QueryDocumentSnapshot) => {
-        try {
-          let data = docSnapshot.data();
-          if (!data) {
-            return; // Skip documents with no data
-          }
-          data = transformFirestoreData(data);
-          const parsed = schema
-            ? validateWithSchema(schema, data, 'FirestoreAdapter.query')
-            : data;
-          // Include document ID in result for key/reference purposes
-          results.push(
-            asEntity<T>({ ...ensureSpreadable(parsed), id: docSnapshot.id })
-          );
-          resultIds.push(docSnapshot.id);
-        } catch (parseError) {
-          // Schema validation failed - throw instead of silently skipping
-          throw wrapCrudError(
-            parseError instanceof Error
-              ? parseError
-              : new Error(String(parseError)),
-            'FirestoreAdapter',
-            'query',
-            collectionName
-          );
-        }
-      });
-
-      // If we got limit+1 results, we have more pages
-      const hasMore = requestLimit
-        ? results.length > (options.limit || 0)
-        : false;
-      // NC4 fix: slice first so lastVisibleId is derived from the kept items only.
-      // Previously lastVisibleId was set inside forEach and ended up pointing to
-      // the sentinel (limit+1-th) doc — the next page would skip 1 real row.
-      const items = hasMore ? results.slice(0, options.limit) : results;
-      const lastVisibleId =
-        items.length > 0 ? (resultIds[items.length - 1] ?? null) : null;
-
-      // Empty results are valid - return empty result, no errors, no logs
-      return {
-        items,
-        hasMore,
-        lastVisible: lastVisibleId,
-        // FirestoreAdapter doesn't provide total count (would require separate count query)
-        total: undefined,
-      };
-    } catch (error) {
-      throw wrapCrudError(error, 'FirestoreAdapter', 'query', collectionName);
-    }
+    return queryFirestore<T>(fs, collectionName, options, schema, 'FirestoreAdapter');
   }
 
   subscribe<T>(

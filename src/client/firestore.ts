@@ -8,14 +8,11 @@
  * @author AMBROISE PARK Consulting
  */
 
-import {
-  getFirestore,
-  connectFirestoreEmulator,
-  type Firestore,
-} from 'firebase/firestore';
+import { getFirestore, type Firestore } from 'firebase/firestore';
 
-import { getPlatformEnvVar, getGlobalSingleton } from '@donotdev/core';
+import { getGlobalSingleton } from '@donotdev/core';
 
+import { connectFirestoreEmulatorFromEnv } from './firestoreEmulator';
 import { getFirebaseSDK } from './sdk';
 
 // =============================================================================
@@ -67,16 +64,7 @@ export function getFirebaseFirestore(): Promise<Firestore> {
     const fs = getFirestore(app);
 
     // Connect to emulator in development
-    const isDev = getPlatformEnvVar('NODE_ENV') === 'development';
-    const useEmulator = getPlatformEnvVar('USE_FIREBASE_EMULATOR') === 'true';
-
-    if (isDev && useEmulator) {
-      const host = getPlatformEnvVar('FIREBASE_EMULATOR_HOST') || 'localhost';
-      const port = parseInt(
-        getPlatformEnvVar('FIREBASE_FIRESTORE_EMULATOR_PORT') || '8080'
-      );
-      connectFirestoreEmulator(fs, host, port);
-    }
+    connectFirestoreEmulatorFromEnv(fs);
 
     state.instance = fs;
     state.initPromise = null;

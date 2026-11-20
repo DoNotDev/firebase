@@ -1,6 +1,6 @@
 {
   "name": "@donotdev/firebase",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": false,
   "type": "module",
   "license": "MIT",
@@ -17,6 +17,11 @@
       "types": "./src/server/index.ts",
       "import": "./src/server/index.ts",
       "default": "./src/server/index.ts"
+    },
+    "./public": {
+      "types": "./src/public/index.ts",
+      "import": "./src/public/index.ts",
+      "default": "./src/public/index.ts"
     }
   },
   "scripts": {
@@ -31,8 +36,8 @@
     "valibot": "^1.5.0"
   },
   "peerDependencies": {
-    "@donotdev/components": "^0.3.0",
-    "@donotdev/core": "^0.3.0"
+    "@donotdev/components": "^0.3.2",
+    "@donotdev/core": "^0.3.1"
   },
   "files": [
     "dist",

@@ -160,6 +160,14 @@ import { getFirestore } from '@donotdev/firebase';
 import { handleError } from '@donotdev/core';
 ```
 
+### Next: Public Server Reader (sitemap, llms.txt, entity pages)
+
+The Next files the framework generates (`sitemap.xml`, `llms.txt`, entity pages' `generateStaticParams`, `appConfig.prerenderRecords`) list published records with `@donotdev/firebase/public` (`createPublicServerFirestore` + `FirestorePublicReader`): Firestore Web SDK with `NEXT_PUBLIC_FIREBASE_API_KEY` / `NEXT_PUBLIC_FIREBASE_PROJECT_ID`, no signed-in user, no Admin SDK. Nothing to write in the app.
+
+- **Security Rules decide** what it reads (`request.auth == null`). It queries `status not-in HIDDEN_STATUSES`; rules are not filters, so they must allow that whole query for signed-out visitors, or the read fails (permission denied) and so does the build.
+- A record without a `status` field is never listed (Firestore `not-in` excludes documents missing the field).
+- **Emulator:** same flags as the client (`NODE_ENV=development` + `NEXT_PUBLIC_USE_FIREBASE_EMULATOR=true`): `next dev` reads the emulator, `next build` reads the project.
+
 ### Cloud Run IAM (Technical Detail)
 
 Firebase 2nd gen Cloud Functions run on Cloud Run. By default, Cloud Run blocks unauthenticated OPTIONS requests (CORS preflight). `dndev deploy` automatically runs `gcloud run services update --no-invoker-iam-check` on all deployed functions.
