@@ -1,6 +1,6 @@
 {
   "name": "@donotdev/firebase",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": false,
   "type": "module",
   "license": "MIT",
@@ -36,8 +36,8 @@
     "valibot": "^1.5.0"
   },
   "peerDependencies": {
-    "@donotdev/components": "^0.3.3",
-    "@donotdev/core": "^0.3.2",
+    "@donotdev/components": "^0.3.4",
+    "@donotdev/core": "^0.3.3",
     "stripe": "^20.4.1"
   },
   "files": [

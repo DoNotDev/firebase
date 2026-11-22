@@ -18,6 +18,8 @@ import type {
   AuthPartnerId,
   AuthMethod,
   AuthProvider,
+  AuthUserSummary,
+  ListAuthUsersResponse,
   UserProfile,
   UserSubscription,
   AppConfig,
@@ -44,6 +46,7 @@ import {
   hasTierAccess,
   createDefaultUserProfile,
   hasRoleAccess,
+  wrapAuthError,
 } from '@donotdev/core';
 
 import {
@@ -1860,6 +1863,28 @@ export class FirebaseAuth implements AuthProvider {
         userMessage: 'Failed to delete account',
         showNotification: true,
       });
+    }
+  }
+
+  /**
+   * List every auth account (admin apps). Calls the app's admin-only `listAuthUsers`
+   * callable (`listAuthUsers()` from `@donotdev/functions/firebase`), region from
+   * `FIREBASE_FUNCTIONS_REGION` (default europe-west1); it refuses non-admins
+   * (`permission-denied`).
+   */
+  async listUsers(): Promise<AuthUserSummary[]> {
+    try {
+      // Lazy: the Functions SDK loads only when an admin app lists users
+      const { getFirebaseFunctions, httpsCallable } =
+        await import('./functions');
+      const listAuthUsers = httpsCallable<
+        Record<string, never>,
+        ListAuthUsersResponse
+      >(await getFirebaseFunctions(), 'listAuthUsers');
+      const { data } = await listAuthUsers({});
+      return data.users;
+    } catch (error) {
+      throw wrapAuthError(error, 'FirebaseAuth', 'listUsers');
     }
   }
 

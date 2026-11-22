@@ -146,6 +146,16 @@ export const getProductDetails = createFunction(schema, 'get_product_details', a
 
 Rate limiting, metrics, auth, schema validation - all included by default.
 
+### Admin User Listing
+
+`useAuthUsers()` / `useAuth('listUsers')` (`@donotdev/auth`) call the admin-only `listAuthUsers` callable, which reads every account with Admin SDK `listUsers` (no copy in Firestore). Non-admins are refused.
+
+```typescript
+// functions/src/index.ts
+import { listAuthUsers as frameworkListAuthUsers } from '@donotdev/functions/firebase';
+export const listAuthUsers = frameworkListAuthUsers();
+```
+
 ### Import Rules
 
 **Functions run on Node.js - you MUST use `/server` imports:**
