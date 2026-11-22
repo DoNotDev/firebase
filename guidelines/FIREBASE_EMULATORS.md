@@ -21,14 +21,14 @@ STRIPE_SECRET_KEY=<stripe_secret_key>
 STRIPE_WEBHOOK_SECRET=whsec_... # Get this from 'stripe listen' output
 ```
 
-### Production Secrets (.env)
+### Production Secrets (.dndev.secrets)
 
-**`functions/.env` is the source of truth for production secrets.**
+**`.dndev.secrets` (project root) is the source of truth for production secrets.** `functions/.env` still works as a legacy source, with a warning; `.env.local` is never one.
 
-These are the secrets that will be synced to Firebase Cloud Functions when you run `dndev deploy` or `dndev sync-secrets`.
+These are the values pushed to Firebase Secret Manager when you run `dndev deploy` or `dndev sync-secrets`. Which function gets which secret is declared in code (`defineSecret`), see [FIREBASE.md](./FIREBASE.md#secrets-stripe-oauth-etc).
 
 ```bash
-# functions/.env
+# .dndev.secrets (project root)
 STRIPE_SECRET_KEY=<stripe_secret_key>
 STRIPE_WEBHOOK_SECRET=whsec_... # Your permanent production webhook secret
 ```

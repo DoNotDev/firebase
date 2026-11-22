@@ -90,7 +90,7 @@ This handles everything:
 
 Functions are scaffolded in `functions/` and auto-deployed with `dndev deploy`.
 
-**Server secrets** (Stripe, OAuth, etc.) go in `functions/.env` - see the [Secrets](#secrets-stripe-oauth-etc) section below.
+**Server secrets** (Stripe, OAuth, etc.) go in `.dndev.secrets` at the project root, and each function declares the ones it reads - see the [Secrets](#secrets-stripe-oauth-etc) section below.
 
 ### CRUD Functions (one line)
 
@@ -186,7 +186,7 @@ If you deploy manually with `firebase deploy`, you'll see `403 Forbidden` on COR
 | `apps/<app>/.env.local` | Local overrides (gitignored) | Vite (overrides .env) |
 | `apps/<app>/.env.production` | Production overrides | Vite (at build --mode production) |
 | `apps/<app>/.env.staging` | Staging config | Vite (via `dndev staging`) |
-| `functions/.env` | Server secrets: STRIPE_SECRET_KEY, OAuth secrets | Cloud Functions runtime |
+| `functions/.env` | Plain server config (e.g. `GITHUB_CLIENT_ID`); secrets only as a legacy source | Cloud Functions runtime |
 | Root `.env` | **Not read by Vite.** Reference only. | Nothing |
 
 **`dndev setup` writes Firebase vars to the app's `.env` automatically.**
@@ -210,16 +210,36 @@ If you deploy manually with `firebase deploy`, you'll see `403 Forbidden` on COR
 
 ## Secrets (Stripe, OAuth, etc.)
 
-Server-side secrets go in `functions/.env`, not the app `.env`.
+Server-side secret values go in `.dndev.secrets` at the project root, not the app `.env` (`functions/.env` still works as a legacy source, with a warning).
 
 **We NEVER ask for secret keys.** You place them yourself:
 
 ```bash
-# functions/.env
+# .dndev.secrets (project root, gitignored)
 STRIPE_SECRET_KEY=<stripe_secret_key>
 STRIPE_WEBHOOK_SECRET=whsec_...
 GITHUB_CLIENT_SECRET=...
 ```
+
+**Which function gets which secret is declared in code.** A function binds only the secrets in its options: `defineSecret('X')` + `secrets: [x]`. The build writes those declarations per function into `functions/functions.yaml`, and `dndev deploy` pushes exactly those (changed values only). The framework functions declare theirs:
+
+```typescript
+// functions/src/index.ts
+import {
+  createCheckoutSession as checkoutSession, // STRIPE_SECRET_KEY
+  createStripeWebhook, // STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
+  createExchangeToken,
+  createRefreshToken,
+} from '@donotdev/functions/firebase';
+
+export const createCheckoutSession = checkoutSession(stripeBackConfig);
+export const stripeWebhook = createStripeWebhook(stripeBackConfig);
+// GITHUB_CLIENT_SECRET, GOOGLE_CLIENT_SECRET; any other provider is rejected
+export const exchangeToken = createExchangeToken(['github', 'google']);
+export const refreshToken = createRefreshToken(['github', 'google']);
+```
+
+Your own functions (and any that call framework helpers reading a secret, e.g. `GITHUB_PERSONAL_ACCESS_TOKEN` for the GitHub team-access helpers) declare it themselves. `{PROVIDER}_CLIENT_ID` is not a secret: it stays in `functions/.env`.
 
 Then sync to your runtime and CI/CD:
 

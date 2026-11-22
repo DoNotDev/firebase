@@ -27,7 +27,7 @@ import { getFirestore } from '@donotdev/firebase';
 ## Environment Variables [Phase 1]
 
 - Client: `apps/my-app/.env` (prefix with `VITE_*`)
-- Server: `functions/.env` (secrets: `STRIPE_*`, OAuth tokens)
+- Server: secrets (`STRIPE_*`, OAuth client secrets) in `.dndev.secrets` at the project root; `functions/.env` is plain server config (e.g. `GITHUB_CLIENT_ID`)
 - Local overrides: `.env.local` (gitignored)
 
 **Supabase RLS must be enabled** in SQL migrations (`ENABLE ROW LEVEL SECURITY`) for SOC2 CC6.3 compliance.

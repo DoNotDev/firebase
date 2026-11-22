@@ -331,16 +331,16 @@ export async function verifyAndHandleStripeWebhook(
 ): Promise<void> {
   const { rawBody, signature, webhookSecret, ...subscriptionOptions } = options;
 
-  // Stripe SDK is dynamically imported to keep it optional — no compile-time types available
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: Stripe is an optional dynamic import, not a dependency of this package; no static types
-  let stripe: any; // Stripe instance type varies across SDK versions; dynamic import prevents static typing
+  // Stripe SDK is dynamically imported: it is an optional peer dependency (apps without Stripe billing never install it)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: Stripe is an optional peer, typed loosely so the package typechecks without it
+  let stripe: any; // Stripe instance type varies across SDK versions; optional peer, no static types
   try {
     const stripeModule = await import('stripe');
     const StripeClass = stripeModule.default ?? stripeModule;
     // 'placeholder' is safe here: constructEvent() only performs HMAC signature
     // verification using webhookSecret, never makes API calls with this key.
     stripe = new StripeClass('placeholder', {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: Stripe is an optional dynamic import, not a dependency of this package; no static types
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- why: Stripe is an optional peer, typed loosely so the package typechecks without it
       apiVersion: '2023-10-16' as any,
     }); // Stripe SDK apiVersion is a branded string literal that changes per SDK version
   } catch {

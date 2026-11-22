@@ -60,6 +60,9 @@ vi.mock('@donotdev/core', async (importActual) => ({
   getPlatformEnvVar: (name: string) => sdk.env[name],
 }));
 
+import { createSchemas } from '@donotdev/core';
+import { productEntity } from '@dndev/test-entities';
+
 import { firestoreToISOString } from '../shared/transform';
 import {
   createPublicServerFirestore,
@@ -164,6 +167,35 @@ describe('FirestorePublicReader.query', () => {
       lastVisible: 'b',
       total: undefined,
     });
+  });
+
+  // The framework's record readers (sitemap, llms.txt, entity pages) pass the entity's
+  // read schema (`entityReadSchemas`): documents still come back as stored, with the
+  // technical `status` / `updatedAt` (availability, lastmod) and fields outside the entity,
+  // never validated (a document the schema rejects must not fail the sitemap)
+  it("returns documents as stored with the entity's read schema", async () => {
+    const at = { seconds: 1_700_000_000, nanoseconds: 0, toDate: () => new Date(1_700_000_000_000) };
+    sdk.docs = [
+      {
+        id: 'a',
+        data: { slug: 'serum', name: 42, status: 'available', updatedAt: at, legacy: 'x' },
+      },
+    ];
+    const result = await reader().query(
+      'products',
+      PUBLIC_QUERY,
+      createSchemas(productEntity).get
+    );
+    expect(result.items).toEqual([
+      {
+        id: 'a',
+        slug: 'serum',
+        name: 42,
+        status: 'available',
+        updatedAt: firestoreToISOString(at),
+        legacy: 'x',
+      },
+    ]);
   });
 
   it('reports hasMore from the extra document and drops it', async () => {

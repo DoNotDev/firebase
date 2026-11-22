@@ -49,11 +49,14 @@ export class FirestorePublicReader implements ICrudAdapter {
   constructor(private readonly firestore: Firestore) {}
 
   /**
-   * Query a collection as a signed-out visitor.
+   * Query a collection as a signed-out visitor: documents as stored, unfiltered and not
+   * validated (what Security Rules return). Same contract as `SupabasePublicReader`: the
+   * records feed server-side derivations (sitemap, llms.txt, entity page metadata).
    *
    * @param collectionName - Collection to query
    * @param options - Filters, order, cursor and page size
-   * @param schema - Optional schema each document is validated against
+   * @param _schema - The entity's read schema the record readers pass: it names the
+   *   fields, and Firestore documents are stored under those names already
    * @returns Page of documents with their `id`
    * @throws CRUD error when Security Rules deny the query or the read fails
    * @since 0.3.1
@@ -61,13 +64,13 @@ export class FirestorePublicReader implements ICrudAdapter {
   query<T>(
     collectionName: string,
     options: QueryOptions,
-    schema?: dndevSchema<unknown>
+    _schema?: dndevSchema<unknown>
   ): Promise<PaginatedQueryResult<T>> {
     return queryFirestore<T>(
       this.firestore,
       collectionName,
       options,
-      schema,
+      undefined,
       'FirestorePublicReader',
       // Backend only: the Web SDK resolves a denied or unreachable read as an empty
       // offline result, which would publish an empty sitemap instead of failing the build.
