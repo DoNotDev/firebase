@@ -195,26 +195,12 @@ If you deploy manually with `firebase deploy`, you'll see `403 Forbidden` on COR
 | `apps/<app>/.env` | Firebase config, Stripe publishable key | Vite (at dev + build) |
 | `apps/<app>/.env.local` | Local overrides (gitignored) | Vite (overrides .env) |
 | `apps/<app>/.env.production` | Production overrides | Vite (at build --mode production) |
-| `apps/<app>/.env.staging` | Staging config | Vite (via `dndev staging`) |
 | `functions/.env` | Plain server config (e.g. `GITHUB_CLIENT_ID`); secrets only as a legacy source | Cloud Functions runtime |
 | Root `.env` | **Not read by Vite.** Reference only. | Nothing |
 
 **`dndev setup` writes Firebase vars to the app's `.env` automatically.**
 
 **Custom domains:** Framework uses `APP_URL` hostname as `authDomain` in production (not Firebase's `projectId.firebaseapp.com`). Set your `FIREBASE_AUTH_DOMAIN` env var (with the appropriate `VITE_` or `NEXT_PUBLIC_` prefix) in `.env.local` and `.env.production` - framework handles the rest.
-
----
-
-## Staging Environment (Optional)
-
-1. Create a second Firebase project (e.g., `my-app-staging`)
-2. Run `dndev setup firebase` to configure the staging project
-3. The wizard updates `.firebaserc` - add a `"staging"` alias manually if the wizard only sets `"default"`:
-   ```json
-   { "projects": { "default": "my-app-prod", "staging": "my-app-staging" } }
-   ```
-4. Create `service-account-key.staging.json` (same steps as production)
-5. Deploy: `dndev staging`
 
 ---
 
